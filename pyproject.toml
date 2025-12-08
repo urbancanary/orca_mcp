@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "orca_mcp"
+version = "1.0.0"
+description = "Orca MCP - Master Orchestrator for Portfolio Management"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+    {name = "Urban Canary"}
+]
+dependencies = [
+    "pandas>=2.0.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+bigquery = [
+    "google-cloud-bigquery>=3.10.0",
+    "google-cloud-storage>=2.10.0",
+    "pyarrow>=13.0.0",
+    "db-dtypes>=1.1.0",
+]
+redis = [
+    "redis>=5.0.0",
+]
+mcp = [
+    "mcp>=1.0.0",
+    "starlette>=0.27.0",
+    "uvicorn>=0.23.0",
+    "sse-starlette>=1.6.0",
+]
+api = [
+    "flask>=3.0.0",
+    "gunicorn>=21.0.0",
+]
+all = [
+    "orca_mcp[bigquery,redis,mcp,api]",
+]
+
+[tool.setuptools]
+packages = ["orca_mcp", "orca_mcp.tools"]
+package-dir = {"orca_mcp" = "."}
+
+[tool.setuptools.package-data]
+orca_mcp = ["*.json", "data/*.json"]
