@@ -19,17 +19,21 @@ from .data_access import setup_bigquery_credentials, query_bigquery
 from .cache_manager import invalidate_cache
 from google.cloud import bigquery
 
-# Add auth_mcp to path
-AUTH_MCP_PATH = Path(__file__).parent.parent.parent / "auth_mcp"
-if str(AUTH_MCP_PATH) not in sys.path:
-    sys.path.insert(0, str(AUTH_MCP_PATH))
-
-from auth_client import get_api_key
-
 # GA10 Configuration - URLs from environment variables
 import os
+
+# Try to import auth_client, fall back to environment variables
+try:
+    AUTH_MCP_PATH = Path(__file__).parent.parent.parent / "auth_mcp"
+    if str(AUTH_MCP_PATH) not in sys.path:
+        sys.path.insert(0, str(AUTH_MCP_PATH))
+    from auth_client import get_api_key
+    GA10_API_KEY = get_api_key("GA10_API_KEY", fallback_env=True, requester="orca_backfill")
+except ImportError:
+    # On Railway/deployed environments, use environment variables directly
+    GA10_API_KEY = os.getenv('GA10_API_KEY', '')
+
 GA10_API_URL = os.getenv('GA10_GATEWAY_URL', 'https://ga10-gateway.example.com')
-GA10_API_KEY = get_api_key("GA10_API_KEY", fallback_env=True, requester="orca_backfill")
 
 # RVM Configuration
 RVM_DATA_URL = os.getenv('GA10_RVM_DATA_URL', 'https://ga10-rvm-data.example.com')
