@@ -20,6 +20,7 @@ from .tools.transactions import (
     clear_staging_portfolio
 )
 from .tools.cloudflare_d1 import (
+    get_orca_url,
     get_watchlist,
     get_watchlist_complete,
     get_holdings,
@@ -30,7 +31,9 @@ from .tools.cloudflare_d1 import (
     get_transactions as get_transactions_d1,
     get_cashflows as get_cashflows_d1,
 )
-from .tools.backfill import backfill_watchlist_analytics, get_backfill_status, refresh_bond_analytics
+# NOTE: backfill module NOT imported here - it has auth_mcp dependencies
+# that only work in local dev environment. Import directly when needed:
+# from orca_mcp.tools.backfill import backfill_watchlist_analytics
 
 __version__ = "1.0.0"
 
@@ -38,6 +41,8 @@ __all__ = [
     # Client config
     "get_client_config",
     "ClientConfig",
+    # URL (single source of truth)
+    "get_orca_url",
     # BigQuery (background sync only)
     "query_bigquery",
     "fetch_credentials_from_auth_mcp",
@@ -60,8 +65,4 @@ __all__ = [
     "get_period_prices",
     "get_transactions_d1",
     "get_cashflows_d1",
-    # Background jobs
-    "backfill_watchlist_analytics",
-    "get_backfill_status",
-    "refresh_bond_analytics",
 ]
