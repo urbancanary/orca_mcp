@@ -1,0 +1,24 @@
+# Orca MCP - Python Dependencies
+
+# Core dependencies
+pandas>=2.0.0
+requests>=2.31.0
+
+# BigQuery and Cloud Storage
+google-cloud-bigquery>=3.10.0
+google-cloud-storage>=2.10.0
+pyarrow>=13.0.0
+db-dtypes>=1.1.0
+
+# Redis caching
+redis>=5.0.0
+
+# HTTP API server (Railway deployment - legacy REST API)
+flask>=3.0.0
+gunicorn>=21.0.0
+
+# MCP SDK and SSE transport (for Claude Desktop remote connections)
+mcp>=1.0.0
+starlette>=0.27.0
+uvicorn>=0.23.0
+sse-starlette>=1.6.0

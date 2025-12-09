@@ -47,6 +47,8 @@ ENV/
 # Credentials
 *.json
 !package.json
+!railway.json
+!service_registry.json
 keys/
 credentials/
 

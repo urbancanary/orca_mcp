@@ -1,0 +1,212 @@
+{
+  "version": "1.0.0",
+  "description": "Central registry of all services and MCP servers that Orca orchestrates",
+  "services": {
+    "auth_mcp": {
+      "nickname": "auth_mcp",
+      "full_name": "Authentication MCP Service",
+      "type": "mcp_server",
+      "endpoint": "https://auth-mcp.urbancanary.workers.dev",
+      "api_base": "https://auth-mcp.urbancanary.workers.dev/api",
+      "description": "Centralized credential management for all clients",
+      "capabilities": [
+        "get_credentials",
+        "store_credentials",
+        "rotate_keys"
+      ],
+      "auth": {
+        "type": "bearer_token",
+        "token_env_var": "AUTH_MCP_TOKEN"
+      }
+    },
+    "ga10": {
+      "nickname": "ga10",
+      "full_name": "Google Analytics 10 API Gateway",
+      "type": "api_gateway",
+      "endpoint": "https://ga10-api.example.com",
+      "description": "Gateway to Google APIs with backwards compatibility",
+      "mcp_servers": ["ga10_rvm_mcp"],
+      "capabilities": [
+        "bond_pricing",
+        "market_data",
+        "analytics"
+      ],
+      "backwards_compatible": true,
+      "notes": "Provides access to longer Google API endpoints via shorthand"
+    },
+    "rvm_country_mcp": {
+      "nickname": "isin_country_lookup",
+      "full_name": "RVM Country Lookup Service (ISIN-based)",
+      "type": "api_service",
+      "endpoint": "https://rvm-country-mcp.urbancanary.workers.dev",
+      "description": "Maps bond ISINs to country names (for portfolio/bond data)",
+      "capabilities": [
+        "isin_to_country",
+        "batch_country_lookup",
+        "country_list"
+      ],
+      "used_by": [
+        "RVM analytics",
+        "Portfolio management",
+        "Bond data enrichment"
+      ],
+      "endpoints": {
+        "batch_lookup": "POST /rvm/country/batch",
+        "single_lookup": "GET /rvm/country/{isin}",
+        "country_list": "GET /rvm/countries"
+      },
+      "notes": "Use for ISIN → country lookups. For general country name standardization, use country_mapping_mcp"
+    },
+    "country_mapping_mcp": {
+      "nickname": "country_standardization",
+      "full_name": "Country Name Standardization Service",
+      "type": "api_service",
+      "endpoint": "https://country-mapping-mcp.urbancanary.workers.dev",
+      "description": "Universal country name standardization with API-specific mappings (IMF, NFA, World Bank, etc.)",
+      "capabilities": [
+        "standardize_country_names",
+        "get_api_specific_code",
+        "reverse_lookup",
+        "batch_mapping"
+      ],
+      "data_sources": [
+        "Countries.xref.xlsx (1,102 variants)",
+        "EWN Database (218 countries)",
+        "NFA API validation (198 countries)"
+      ],
+      "used_by": [
+        "IMF data integration",
+        "NFA ratings",
+        "World Bank data",
+        "Sovereign credit reports",
+        "All country-dependent analytics"
+      ],
+      "endpoints": {
+        "map_country": "GET /map/{input}",
+        "map_for_api": "GET /map/{input}?api={imf|nfa|worldbank|iso}",
+        "batch_map": "POST /map",
+        "reverse_lookup": "GET /reverse/{iso_code}",
+        "health": "GET /health"
+      },
+      "coverage": {
+        "total_countries": 376,
+        "input_variants": 1102,
+        "imf_codes": 199,
+        "worldbank_codes": 242,
+        "nfa_names": 198,
+        "iso_codes": 246
+      },
+      "notes": "CRITICAL: Primary service for all country name standardization. Use before calling IMF/NFA/World Bank APIs."
+    },
+    "imf_mcp": {
+      "nickname": "imf",
+      "full_name": "IMF DataMapper API Service",
+      "type": "api_service",
+      "endpoint": "https://imf-mcp.urbancanary.workers.dev",
+      "description": "IMF macroeconomic data with AI-powered analysis",
+      "capabilities": [
+        "gdp_growth",
+        "inflation_rate",
+        "unemployment_rate",
+        "current_account",
+        "fiscal_deficit",
+        "government_debt_to_gdp",
+        "gdp_per_capita"
+      ],
+      "tools": [
+        "imf_gdp",
+        "imf_inflation",
+        "imf_unemployment",
+        "imf_current_account",
+        "imf_fiscal_deficit",
+        "imf_debt",
+        "imf_gdp_per_capita"
+      ],
+      "data_source": "IMF DataMapper (https://www.imf.org/external/datamapper/)",
+      "coverage": "150+ countries",
+      "country_code_format": "ISO 3-letter (USA, DEU, JPN, etc.)",
+      "endpoints": {
+        "tools_list": "GET /mcp/tools/list",
+        "tool_call": "POST /mcp/tools/call",
+        "health": "GET /health"
+      },
+      "auth": {
+        "type": "bearer_token",
+        "token_env_var": "MCP_AUTH_TOKEN"
+      },
+      "notes": "Use country-mapping-mcp to convert country names to ISO 3-letter codes before calling IMF tools"
+    },
+    "worldbank_mcp": {
+      "nickname": "worldbank",
+      "full_name": "World Bank Data API Service",
+      "type": "api_service",
+      "endpoint": "https://worldbank-mcp.urbancanary.workers.dev",
+      "description": "World Bank development indicators and economic data",
+      "capabilities": [
+        "economic_indicators",
+        "development_metrics",
+        "poverty_data",
+        "education_stats",
+        "health_metrics"
+      ],
+      "data_source": "World Bank Open Data API",
+      "coverage": "200+ countries and regions",
+      "endpoints": {
+        "indicators": "GET /api/indicators",
+        "country_data": "GET /api/country/{code}",
+        "health": "GET /health"
+      },
+      "notes": "Use country-mapping-mcp to convert country names to World Bank codes before calling"
+    },
+    "portfolio_mcp": {
+      "nickname": "portfolio_mcp",
+      "full_name": "Portfolio Analytics MCP",
+      "type": "mcp_server",
+      "location": "local",
+      "module_path": "portfolio_mcp.server",
+      "description": "LOCKED - Core bond math and portfolio analytics (xtrillion IP)",
+      "capabilities": [
+        "get_portfolios",
+        "get_transactions",
+        "get_holdings",
+        "query_portfolio",
+        "get_portfolio_summary"
+      ],
+      "locked": true,
+      "license_required": true
+    },
+    "bigquery": {
+      "nickname": "bigquery",
+      "full_name": "Google BigQuery",
+      "type": "database",
+      "project": "future-footing-414610",
+      "dataset": "portfolio_data",
+      "description": "Primary data warehouse for portfolio data",
+      "credentials_source": "auth_mcp",
+      "credentials_key": "GOOGLE_CREDENTIALS"
+    }
+  },
+  "access_levels": {
+    "full": {
+      "name": "Full Access",
+      "allowed_tools": ["*"],
+      "features": {
+        "rvm_analytics": true,
+        "portfolio_optimization": true,
+        "scenario_analysis": true,
+        "custom_reports": true
+      }
+    }
+  },
+  "clients": {
+    "guinness": {
+      "client_id": "guinness",
+      "name": "Guinness Asset Management",
+      "database_registry": "data/database_registry.json",
+      "bigquery_dataset": "portfolio_data",
+      "custom_features_path": "clients/guinness",
+      "access_level": "full",
+      "active": true
+    }
+  }
+}
