@@ -15,12 +15,16 @@ import pandas as pd
 from ..client_config import get_client_config
 
 
-def _get_d1_api_url() -> str:
+def get_orca_url() -> str:
     """
-    Get the Cloudflare D1 API URL
+    Get the Orca MCP API URL.
+
+    This is the single source of truth for the ORCA endpoint URL.
+    Client applications should import this function rather than
+    hardcoding the URL.
 
     Returns:
-        API base URL for D1 operations
+        API base URL for ORCA MCP operations
     """
     import os
 
@@ -29,6 +33,10 @@ def _get_d1_api_url() -> str:
         return "http://localhost:8787"
     else:
         return os.getenv('ORCA_URL', 'https://portfolio-optimizer-mcp.urbancanary.workers.dev')
+
+
+# Alias for backward compatibility (internal use)
+_get_d1_api_url = get_orca_url
 
 
 def save_staging_transaction(transaction_data: Dict[str, Any], client_id: str = None) -> Dict[str, Any]:
@@ -564,6 +572,94 @@ def search_bonds(
     except Exception as e:
         print(f"❌ Failed to search bonds in D1: {str(e)}")
         return pd.DataFrame()
+
+
+def match_bond(
+    query: str,
+    source: str = "analytics",
+    top_n: int = 5,
+    portfolio_id: str = "wnbf",
+    bonds: List[Dict] = None
+) -> Dict[str, Any]:
+    """
+    Match a natural language bond query using Orca's server-side intelligence.
+
+    This function sends raw text to the Orca API and receives structured
+    matching results. The intelligence lives in Orca, not the client.
+
+    Example queries:
+        - "buy 500k colombia 61"
+        - "sell ANGLAN 8.75 2025"
+        - "US912810TM67"  (direct ISIN lookup)
+        - "mexico 5s of 27"
+
+    Args:
+        query: Natural language bond query or ISIN
+        source: Where to search ("analytics", "holdings", "watchlist", "custom")
+        top_n: Number of matches to return (default: 5)
+        portfolio_id: Portfolio ID for holdings/watchlist searches
+        bonds: Custom list of bonds to search (when source="custom")
+
+    Returns:
+        Dictionary with:
+        - intent: Parsed trade intent (action, quantity, bond_query)
+        - matches: List of matching bonds with scores
+        - confident_match: Single high-confidence match (if any)
+        - source: Data source used
+        - total_bonds_searched: Size of search universe
+    """
+    url = f"{_get_d1_api_url()}/api/bond_match"
+
+    payload = {
+        "query": query,
+        "source": source,
+        "top_n": top_n,
+        "portfolio_id": portfolio_id
+    }
+
+    if bonds:
+        payload["bonds"] = bonds
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode('utf-8'),
+        headers={'Content-Type': 'application/json'},
+        method='POST'
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=15) as response:
+            data = json.loads(response.read().decode())
+
+            # Log result summary
+            matches = data.get('matches', [])
+            confident = data.get('confident_match')
+            if confident:
+                print(f"✅ Confident match: {confident.get('ticker')} {confident.get('description')}")
+            elif matches:
+                print(f"📊 Found {len(matches)} potential matches (best score: {matches[0].get('score', 0)})")
+            else:
+                print(f"⚠️ No matches found for: {query}")
+
+            return data
+
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode() if e.fp else ""
+        print(f"❌ Bond match failed: {e.code} - {error_body}")
+        return {
+            "error": f"HTTP {e.code}: {error_body}",
+            "intent": None,
+            "matches": [],
+            "confident_match": None
+        }
+    except Exception as e:
+        print(f"❌ Bond match failed: {str(e)}")
+        return {
+            "error": str(e),
+            "intent": None,
+            "matches": [],
+            "confident_match": None
+        }
 
 
 def sync_analytics_to_d1(analytics_df: pd.DataFrame, clear_first: bool = False) -> Dict[str, Any]:

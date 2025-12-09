@@ -30,6 +30,7 @@ from .tools.cloudflare_d1 import (
     get_period_prices,
     get_transactions as get_transactions_d1,
     get_cashflows as get_cashflows_d1,
+    match_bond,
 )
 # NOTE: backfill module NOT imported here - it has auth_mcp dependencies
 # that only work in local dev environment. Import directly when needed:
@@ -65,4 +66,6 @@ __all__ = [
     "get_period_prices",
     "get_transactions_d1",
     "get_cashflows_d1",
+    # Bond matching (server-side intelligence)
+    "match_bond",
 ]

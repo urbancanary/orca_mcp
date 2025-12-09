@@ -33,7 +33,7 @@ except ImportError:
     from pathlib import Path
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from client_config import get_client_config
-    from tools.cache_manager import get_cache_manager, CacheManager
+    from .cache_manager import get_cache_manager, CacheManager
 
 
 def _allow_local_auth_fallback() -> bool:

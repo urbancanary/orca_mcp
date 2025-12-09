@@ -119,31 +119,31 @@ class ClientConfig:
         project_root = Path(__file__).parent.parent
         return project_root / custom_path
 
-    def get_license_tier(self) -> str:
-        """Get client's license tier"""
-        return self.client_config.get("license_tier", "basic")
+    def get_access_level(self) -> str:
+        """Get client's access level"""
+        return self.client_config.get("access_level", "full")
 
-    def get_tier_config(self) -> Dict[str, Any]:
-        """Get full license tier configuration"""
-        tier = self.get_license_tier()
-        tiers = self.registry.get("license_tiers", {})
-        return tiers.get(tier, tiers.get("basic", {}))
+    def get_access_config(self) -> Dict[str, Any]:
+        """Get access level configuration"""
+        level = self.get_access_level()
+        access_levels = self.registry.get("access_levels", {})
+        return access_levels.get(level, access_levels.get("full", {"allowed_tools": ["*"], "features": {}}))
 
     def is_tool_allowed(self, tool_name: str) -> bool:
         """
-        Check if client's license allows this tool
+        Check if client is allowed to use this tool
 
         Args:
             tool_name: Name of the MCP tool
 
         Returns:
-            True if allowed, False if requires upgrade
+            True if allowed
         """
         if not self.client_config.get("active", False):
             return False
 
-        tier_config = self.get_tier_config()
-        allowed_tools = tier_config.get("allowed_tools", [])
+        access_config = self.get_access_config()
+        allowed_tools = access_config.get("allowed_tools", ["*"])
 
         # Wildcard means all tools allowed
         if "*" in allowed_tools:
@@ -153,7 +153,7 @@ class ClientConfig:
 
     def has_feature(self, feature_name: str) -> bool:
         """
-        Check if client's license includes a feature
+        Check if client has access to a feature
 
         Args:
             feature_name: Feature name (e.g., 'rvm_analytics')
@@ -161,26 +161,12 @@ class ClientConfig:
         Returns:
             True if feature is enabled
         """
-        tier_config = self.get_tier_config()
-        features = tier_config.get("features", {})
-        return features.get(feature_name, False)
-
-    def get_limit(self, limit_name: str) -> Optional[int]:
-        """
-        Get client's usage limit
-
-        Args:
-            limit_name: Limit name (e.g., 'max_queries_per_day')
-
-        Returns:
-            Limit value or None if unlimited
-        """
-        tier_config = self.get_tier_config()
-        limits = tier_config.get("limits", {})
-        return limits.get(limit_name)
+        access_config = self.get_access_config()
+        features = access_config.get("features", {})
+        return features.get(feature_name, True)  # Default to True for full access
 
     def __repr__(self):
-        return f"ClientConfig(client_id='{self.client_id}', tier='{self.get_license_tier()}', dataset='{self.get_bigquery_dataset()}')"
+        return f"ClientConfig(client_id='{self.client_id}', access_level='{self.get_access_level()}', dataset='{self.get_bigquery_dataset()}')"
 
 
 # Singleton instance for easy access
