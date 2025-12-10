@@ -10,6 +10,7 @@ Rules:
 - Hard (must comply):
   - Max Single Issuer: 10% (5/10/40 rule)
   - Sum of Issuers >5%: 40% (5/10/40 rule)
+  - NFA 3*+ Countries: 100% (all holdings must be in 3*+ rated countries)
   - Cash not overdrawn: >= 0
 
 - Soft (targets):
@@ -19,8 +20,37 @@ Rules:
 """
 
 from typing import Dict, List, Any, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import pandas as pd
+import json
+from pathlib import Path
+
+
+# Load NFA country ratings from james_mcp data
+def _load_nfa_ratings() -> Dict[str, int]:
+    """Load NFA country ratings from JSON file."""
+    # Try multiple paths for flexibility
+    possible_paths = [
+        Path(__file__).parent.parent.parent / "james_mcp" / "data" / "country_eligibility.json",
+        Path("/Users/andyseaman/Notebooks/mcp_central/james_mcp/data/country_eligibility.json"),
+    ]
+
+    for path in possible_paths:
+        if path.exists():
+            with open(path) as f:
+                data = json.load(f)
+                # Extract country -> nfa_rating mapping
+                return {
+                    country: info.get('nfa_rating', 0)
+                    for country, info in data.get('countries', {}).items()
+                }
+
+    # Fallback: return empty dict (will treat all countries as unknown)
+    return {}
+
+
+# Global NFA ratings lookup (loaded once)
+NFA_RATINGS = _load_nfa_ratings()
 
 
 @dataclass
@@ -83,7 +113,7 @@ def check_compliance(
         return ComplianceResult(
             is_compliant=False,
             hard_pass=0,
-            hard_total=3,
+            hard_total=4,
             soft_pass=0,
             soft_total=3,
             rules=[],
@@ -118,6 +148,58 @@ def check_compliance(
     num_holdings = len(holdings)
     avg_position = holdings['pct_nav'].mean()
 
+    # === NFA COUNTRY ELIGIBILITY (3*+ required) ===
+    # Check each holding's country against NFA ratings
+    nfa_violations = []
+    if 'country' in holdings.columns:
+        for _, row in holdings.iterrows():
+            country = row.get('country', 'Unknown')
+            nfa_rating = NFA_RATINGS.get(country, 0)
+            if nfa_rating < 3:
+                nfa_violations.append({
+                    'ticker': row.get('ticker', 'Unknown'),
+                    'isin': row.get('isin', ''),
+                    'description': row.get('description', ''),
+                    'country': country,
+                    'nfa_rating': nfa_rating,
+                    'pct_nav': row.get('pct_nav', 0),
+                    'market_value': row.get('market_value', 0),
+                    'par_amount': row.get('par_amount', 0)
+                })
+
+    nfa_violation_pct = sum(v['pct_nav'] for v in nfa_violations)
+    nfa_compliant = len(nfa_violations) == 0
+
+    # === BUILD VIOLATION DETAILS FOR 5/10/40 ===
+    # List issuers over 5% for the expander - include all bonds for that issuer
+    issuers_over_5_details = []
+    for ticker, pct in issuers_over_5.items():
+        # Get all holdings for this issuer
+        issuer_holdings = holdings[holdings['ticker'] == ticker]
+        issuer_country = issuer_holdings['country'].iloc[0] if len(issuer_holdings) > 0 else 'Unknown'
+        issuer_total_mv = issuer_holdings['market_value'].sum()
+
+        # List of bonds for this issuer
+        bonds = []
+        for _, row in issuer_holdings.iterrows():
+            bonds.append({
+                'isin': row['isin'] if 'isin' in row.index else '',
+                'description': row['description'] if 'description' in row.index else '',
+                'market_value': row['market_value'] if 'market_value' in row.index else 0,
+                'par_amount': row['par_amount'] if 'par_amount' in row.index else 0,
+                'pct_nav': row['pct_nav'] if 'pct_nav' in row.index else 0  # Individual holding weight
+            })
+
+        issuers_over_5_details.append({
+            'ticker': ticker,
+            'pct_nav': pct,
+            'country': issuer_country,
+            'total_market_value': issuer_total_mv,
+            'bonds': bonds
+        })
+    # Sort by weight descending
+    issuers_over_5_details = sorted(issuers_over_5_details, key=lambda x: x['pct_nav'], reverse=True)
+
     # Build rules list
     rules = []
 
@@ -149,6 +231,16 @@ def check_compliance(
         current=f'${net_cash:,.0f}',
         status='Fail' if is_overdrawn else 'Pass',
         details='OVERDRAWN!' if is_overdrawn else 'OK'
+    ))
+
+    # Hard Rule 4: NFA 3*+ Countries
+    rules.append(ComplianceRule(
+        rule_type='Hard',
+        name='NFA 3*+ Countries',
+        limit='100%',
+        current=f'{100 - nfa_violation_pct:.1f}%',
+        status='Pass' if nfa_compliant else 'Fail',
+        details=f'{len(nfa_violations)} ineligible' if nfa_violations else 'All eligible'
     ))
 
     # Soft Rule 1: Cash Level
@@ -208,6 +300,10 @@ def check_compliance(
         'max_country': max_country,
         'country_breakdown': country_pcts.to_dict(),
         'issuer_weights': issuer_weights.to_dict(),
+        # Violation details for expanders
+        'issuers_over_5_details': issuers_over_5_details,  # List of {ticker, pct_nav, country}
+        'nfa_violations': nfa_violations,  # List of {ticker, country, nfa_rating, pct_nav, market_value}
+        'nfa_violation_pct': nfa_violation_pct,
     }
 
     return ComplianceResult(
