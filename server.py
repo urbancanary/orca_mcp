@@ -68,6 +68,11 @@ from orca_mcp.tools.video_gateway import (
     video_get_transcript,
     video_keyword_search
 )
+from orca_mcp.tools.compliance import (
+    check_compliance,
+    check_compliance_impact,
+    compliance_to_dict
+)
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -616,6 +621,144 @@ async def list_tools() -> list[Tool]:
                     }
                 },
                 "required": ["query"]
+            }
+        ),
+
+        # Compliance Tools
+        Tool(
+            name="get_compliance_status",
+            description="Get comprehensive UCITS compliance status with rich metrics. Returns: overall pass/fail, rule-by-rule breakdown with current vs limit values, headroom analysis (how much room before breaching limits), concentration metrics (top issuers, top countries), and key stats. Much more informative than a simple pass/fail check.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "portfolio_id": {
+                        "type": "string",
+                        "description": "Portfolio ID (default: 'wnbf')"
+                    },
+                    "client_id": {
+                        "type": "string",
+                        "description": "Client identifier (optional)"
+                    }
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="check_trade_compliance_impact",
+            description="Pre-trade compliance check. Simulates adding a trade and shows how it would impact compliance. Returns before/after comparison showing which rules would be affected, whether it would breach any limits, and the projected new values for each metric.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "portfolio_id": {
+                        "type": "string",
+                        "description": "Portfolio ID (default: 'wnbf')"
+                    },
+                    "ticker": {
+                        "type": "string",
+                        "description": "Ticker of the bond to trade"
+                    },
+                    "country": {
+                        "type": "string",
+                        "description": "Country of the bond"
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["buy", "sell"],
+                        "description": "Trade action"
+                    },
+                    "market_value": {
+                        "type": "number",
+                        "description": "Market value of the trade (positive number)"
+                    },
+                    "client_id": {
+                        "type": "string",
+                        "description": "Client identifier (optional)"
+                    }
+                },
+                "required": ["ticker", "country", "action", "market_value"]
+            }
+        ),
+        Tool(
+            name="search_bonds_rvm",
+            description="Search the RVM (Relative Value Model) universe for bonds. Use this INSTEAD of web search when looking for bond investment opportunities. Returns bonds with yield, spread, duration, expected return from the analytics database. Can filter by country, issuer type (sovereign, quasi-sovereign, corporate), rating, and sort by expected return. Includes both sovereign bonds AND quasi-sovereigns (state-owned enterprises like Codelco, Pemex, Petrobras).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "country": {
+                        "type": "string",
+                        "description": "Country to filter by (e.g., 'Chile', 'Mexico', 'Saudi Arabia'). Case insensitive."
+                    },
+                    "ticker": {
+                        "type": "string",
+                        "description": "Ticker pattern to search (e.g., 'CHILE' for sovereigns, 'CDEL' for Codelco, 'PEMEX' for Pemex)"
+                    },
+                    "issuer_type": {
+                        "type": "string",
+                        "enum": ["sovereign", "quasi-sovereign", "corporate", "all"],
+                        "description": "Filter by issuer type. 'sovereign' = government bonds, 'quasi-sovereign' = state-owned enterprises (Pemex, Codelco, etc), 'all' = everything"
+                    },
+                    "min_expected_return": {
+                        "type": "number",
+                        "description": "Minimum expected return (%) from RVM model"
+                    },
+                    "max_duration": {
+                        "type": "number",
+                        "description": "Maximum duration in years"
+                    },
+                    "min_rating": {
+                        "type": "string",
+                        "description": "Minimum rating (e.g., 'BBB-', 'A', 'AA')"
+                    },
+                    "sort_by": {
+                        "type": "string",
+                        "enum": ["expected_return", "yield", "spread", "duration"],
+                        "description": "How to sort results (default: expected_return descending)"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of results (default: 10)"
+                    },
+                    "exclude_portfolio": {
+                        "type": "boolean",
+                        "description": "Exclude bonds already in portfolio (default: true)"
+                    },
+                    "portfolio_id": {
+                        "type": "string",
+                        "description": "Portfolio ID to exclude holdings from (default: 'wnbf')"
+                    },
+                    "client_id": {
+                        "type": "string",
+                        "description": "Client identifier (optional)"
+                    }
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="suggest_rebalancing",
+            description="Analyze portfolio and suggest rebalancing trades to improve compliance, diversification, or optimize expected returns. Returns prioritized list of suggested sells (overweight positions, low return bonds) and buys (underweight countries, high return opportunities). Considers compliance headroom and available cash.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "portfolio_id": {
+                        "type": "string",
+                        "description": "Portfolio ID (default: 'wnbf')"
+                    },
+                    "focus": {
+                        "type": "string",
+                        "enum": ["compliance", "diversification", "returns", "all"],
+                        "description": "What to optimize for: 'compliance' (fix breaches), 'diversification' (reduce concentration), 'returns' (sell low/buy high expected return), 'all' (balanced). Default: 'all'"
+                    },
+                    "max_suggestions": {
+                        "type": "integer",
+                        "description": "Maximum number of trade suggestions (default: 5)"
+                    },
+                    "client_id": {
+                        "type": "string",
+                        "description": "Client identifier (optional)"
+                    }
+                },
+                "required": []
             }
         )
     ]
@@ -1569,6 +1712,581 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             return [TextContent(
                 type="text",
                 text=json.dumps(result, indent=2)
+            )]
+
+        # Compliance Tools
+        elif name == "get_compliance_status":
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
+            import pandas as pd
+
+            # Get holdings from D1 via existing method
+            holdings_sql = f"""
+            WITH net_holdings AS (
+                SELECT
+                    isin, ticker, description, country,
+                    SUM(CASE WHEN transaction_type = 'BUY' THEN par_amount ELSE 0 END) -
+                    SUM(CASE WHEN transaction_type = 'SELL' THEN par_amount ELSE 0 END) as par_amount,
+                    SUM(CASE WHEN transaction_type = 'BUY' THEN market_value ELSE 0 END) -
+                    SUM(CASE WHEN transaction_type = 'SELL' THEN market_value ELSE 0 END) as market_value
+                FROM transactions
+                WHERE portfolio_id = '{portfolio_id}'
+                    AND status = 'settled'
+                    AND isin != 'CASH'
+                GROUP BY isin, ticker, description, country
+                HAVING par_amount > 0
+            )
+            SELECT * FROM net_holdings
+            """
+            holdings_df = query_bigquery(holdings_sql, client_id)
+
+            # Get cash
+            cash_sql = f"""
+            SELECT
+                (SELECT COALESCE(SUM(market_value), 0) FROM transactions
+                 WHERE portfolio_id = '{portfolio_id}' AND ticker = 'CASH' AND transaction_type = 'INITIAL') -
+                (SELECT COALESCE(SUM(market_value), 0) FROM transactions
+                 WHERE portfolio_id = '{portfolio_id}' AND status = 'settled' AND transaction_type = 'BUY' AND isin != 'CASH') +
+                (SELECT COALESCE(SUM(market_value), 0) FROM transactions
+                 WHERE portfolio_id = '{portfolio_id}' AND status = 'settled' AND transaction_type = 'SELL') as net_cash
+            """
+            cash_df = query_bigquery(cash_sql, client_id)
+            net_cash = float(cash_df.iloc[0]['net_cash']) if not cash_df.empty else 0.0
+
+            # Run compliance check
+            compliance_result = check_compliance(holdings_df, net_cash)
+            base_result = compliance_to_dict(compliance_result)
+
+            # Add rich metrics for Claude
+            metrics = compliance_result.metrics
+            total_nav = metrics['total_nav']
+
+            # Calculate headroom (how much room before breaching limits)
+            headroom = {
+                'max_issuer_headroom_pct': round(10.0 - metrics['max_position'], 2),
+                'max_issuer_headroom_dollars': round((10.0 - metrics['max_position']) * total_nav / 100, 0),
+                'max_country_headroom_pct': round(20.0 - metrics['max_country_pct'], 2),
+                'max_country_headroom_dollars': round((20.0 - metrics['max_country_pct']) * total_nav / 100, 0),
+                'cash_headroom_pct': round(5.0 - metrics['cash_pct'], 2) if metrics['cash_pct'] < 5 else 0,
+            }
+
+            # Top 5 issuers and countries
+            issuer_weights = sorted(metrics['issuer_weights'].items(), key=lambda x: x[1], reverse=True)[:5]
+            country_weights = sorted(metrics['country_breakdown'].items(), key=lambda x: x[1], reverse=True)[:5]
+
+            # Build rich response
+            result = {
+                'summary': {
+                    'is_compliant': compliance_result.is_compliant,
+                    'status': 'PASS' if compliance_result.is_compliant else 'FAIL',
+                    'hard_rules': f"{compliance_result.hard_pass}/{compliance_result.hard_total} pass",
+                    'soft_rules': f"{compliance_result.soft_pass}/{compliance_result.soft_total} pass",
+                },
+                'key_metrics': {
+                    'total_nav': f"${total_nav/1_000_000:.2f}M",
+                    'num_holdings': metrics['num_holdings'],
+                    'avg_position': f"{metrics['avg_position']:.1f}%",
+                    'max_issuer': f"{metrics['max_position']:.1f}% ({metrics['max_position_ticker']})",
+                    'max_country': f"{metrics['max_country_pct']:.1f}% ({metrics['max_country']})",
+                    'cash': f"{metrics['cash_pct']:.1f}% (${net_cash/1000:.0f}k)",
+                },
+                'headroom': {
+                    'max_issuer': f"{headroom['max_issuer_headroom_pct']:.1f}% (${headroom['max_issuer_headroom_dollars']/1000:.0f}k) before breach",
+                    'max_country': f"{headroom['max_country_headroom_pct']:.1f}% (${headroom['max_country_headroom_dollars']/1000:.0f}k) before breach",
+                },
+                'concentration': {
+                    'top_5_issuers': [{'ticker': t, 'weight': f"{w:.1f}%"} for t, w in issuer_weights],
+                    'top_5_countries': [{'country': c, 'weight': f"{w:.1f}%"} for c, w in country_weights],
+                    'issuers_over_5pct': metrics['num_issuers_over_5'],
+                    'sum_issuers_over_5pct': f"{metrics['sum_over_5_pct']:.1f}%",
+                },
+                'rules': base_result['rules']
+            }
+
+            return [TextContent(
+                type="text",
+                text=json.dumps(result, indent=2, default=str)
+            )]
+
+        elif name == "check_trade_compliance_impact":
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
+            ticker = arguments["ticker"]
+            country = arguments["country"]
+            action = arguments["action"]
+            market_value = arguments["market_value"]
+            import pandas as pd
+
+            # Get holdings from D1
+            holdings_sql = f"""
+            WITH net_holdings AS (
+                SELECT
+                    isin, ticker, description, country,
+                    SUM(CASE WHEN transaction_type = 'BUY' THEN par_amount ELSE 0 END) -
+                    SUM(CASE WHEN transaction_type = 'SELL' THEN par_amount ELSE 0 END) as par_amount,
+                    SUM(CASE WHEN transaction_type = 'BUY' THEN market_value ELSE 0 END) -
+                    SUM(CASE WHEN transaction_type = 'SELL' THEN market_value ELSE 0 END) as market_value
+                FROM transactions
+                WHERE portfolio_id = '{portfolio_id}'
+                    AND status = 'settled'
+                    AND isin != 'CASH'
+                GROUP BY isin, ticker, description, country
+                HAVING par_amount > 0
+            )
+            SELECT * FROM net_holdings
+            """
+            holdings_df = query_bigquery(holdings_sql, client_id)
+
+            # Get cash
+            cash_sql = f"""
+            SELECT
+                (SELECT COALESCE(SUM(market_value), 0) FROM transactions
+                 WHERE portfolio_id = '{portfolio_id}' AND ticker = 'CASH' AND transaction_type = 'INITIAL') -
+                (SELECT COALESCE(SUM(market_value), 0) FROM transactions
+                 WHERE portfolio_id = '{portfolio_id}' AND status = 'settled' AND transaction_type = 'BUY' AND isin != 'CASH') +
+                (SELECT COALESCE(SUM(market_value), 0) FROM transactions
+                 WHERE portfolio_id = '{portfolio_id}' AND status = 'settled' AND transaction_type = 'SELL') as net_cash
+            """
+            cash_df = query_bigquery(cash_sql, client_id)
+            net_cash = float(cash_df.iloc[0]['net_cash']) if not cash_df.empty else 0.0
+
+            # Run impact check
+            proposed_trade = {
+                'ticker': ticker,
+                'country': country,
+                'action': action,
+                'market_value': market_value
+            }
+            impact_result = check_compliance_impact(holdings_df, net_cash, proposed_trade)
+
+            # Add human-readable summary
+            before = impact_result['before']
+            after = impact_result['after']
+            impact = impact_result['impact']
+
+            summary = {
+                'trade': f"{action.upper()} ${market_value/1000:.0f}k {ticker} ({country})",
+                'will_breach': impact['would_breach'],
+                'will_fix_breach': impact['would_fix'],
+                'compliance_change': impact['compliance_change'],
+                'before_status': 'PASS' if before['is_compliant'] else 'FAIL',
+                'after_status': 'PASS' if after['is_compliant'] else 'FAIL',
+            }
+
+            # Find rules that change
+            rule_changes = []
+            for i, before_rule in enumerate(before['rules']):
+                after_rule = after['rules'][i]
+                if before_rule['status'] != after_rule['status']:
+                    rule_changes.append({
+                        'rule': before_rule['name'],
+                        'before': f"{before_rule['current']} ({before_rule['status']})",
+                        'after': f"{after_rule['current']} ({after_rule['status']})",
+                    })
+
+            result = {
+                'summary': summary,
+                'rule_changes': rule_changes if rule_changes else 'No rule status changes',
+                'before_metrics': {
+                    'max_issuer': f"{before['metrics']['max_position']:.1f}%",
+                    'max_country': f"{before['metrics']['max_country_pct']:.1f}%",
+                    'cash': f"{before['metrics']['cash_pct']:.1f}%",
+                },
+                'after_metrics': {
+                    'max_issuer': f"{after['metrics']['max_position']:.1f}%",
+                    'max_country': f"{after['metrics']['max_country_pct']:.1f}%",
+                    'cash': f"{after['metrics']['cash_pct']:.1f}%",
+                },
+            }
+
+            return [TextContent(
+                type="text",
+                text=json.dumps(result, indent=2, default=str)
+            )]
+
+        elif name == "search_bonds_rvm":
+            # Search RVM universe for bonds - use this instead of web search!
+            country = arguments.get("country")
+            ticker_pattern = arguments.get("ticker")
+            issuer_type = arguments.get("issuer_type", "all")
+            min_expected_return = arguments.get("min_expected_return")
+            max_duration = arguments.get("max_duration")
+            min_rating = arguments.get("min_rating")
+            sort_by = arguments.get("sort_by", "expected_return")
+            limit = arguments.get("limit", 10)
+            exclude_portfolio = arguments.get("exclude_portfolio", True)
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
+
+            # Map sort_by to SQL columns
+            sort_map = {
+                'expected_return': 'return_ytw',
+                'yield': 'ytw',
+                'spread': 'oas',
+                'duration': 'oad'
+            }
+            sort_column = sort_map.get(sort_by, 'return_ytw')
+
+            # Known quasi-sovereign tickers by country for issuer_type filtering
+            quasi_sovereigns = {
+                'PEMEX', 'CFE', 'NAFIN',  # Mexico
+                'CDEL', 'ENAPCL', 'BMETR', 'BCHILE',  # Chile
+                'PETBRA', 'BNDES',  # Brazil
+                'ECOPET',  # Colombia
+                'KSA', 'ARAMCO',  # Saudi Arabia (ARAMCO is quasi)
+                'QATAEN', 'QNBK',  # Qatar
+                'KUWSOV', 'KPC',  # Kuwait
+                'ADSOVR',  # Abu Dhabi
+                'PERULN', 'COFIDE',  # Peru
+                'INDON', 'PLNIJ',  # Indonesia
+                'MLAY', 'PETMK',  # Malaysia
+            }
+
+            # Build WHERE conditions
+            conditions = []
+
+            if country:
+                conditions.append(f"LOWER(a.country) = LOWER('{country}')")
+
+            if ticker_pattern:
+                conditions.append(f"UPPER(a.ticker) LIKE UPPER('%{ticker_pattern}%')")
+
+            if issuer_type == 'sovereign':
+                # Sovereigns typically have country name as ticker or specific sovereign tickers
+                quasi_list = "', '".join(quasi_sovereigns)
+                conditions.append(f"UPPER(a.ticker) NOT IN ('{quasi_list}')")
+            elif issuer_type == 'quasi-sovereign':
+                quasi_list = "', '".join(quasi_sovereigns)
+                conditions.append(f"UPPER(a.ticker) IN ('{quasi_list}')")
+
+            if min_expected_return is not None:
+                conditions.append(f"a.return_ytw >= {min_expected_return}")
+
+            if max_duration is not None:
+                conditions.append(f"a.oad <= {max_duration}")
+
+            # Build exclusion subquery if needed
+            exclusion_sql = ""
+            if exclude_portfolio:
+                exclusion_sql = f"""
+                AND a.isin NOT IN (
+                    SELECT DISTINCT isin FROM transactions
+                    WHERE portfolio_id = '{portfolio_id}'
+                    AND status = 'settled'
+                    AND isin != 'CASH'
+                )
+                """
+
+            where_clause = " AND ".join(conditions) if conditions else "1=1"
+
+            sql = f"""
+            WITH latest AS (
+                SELECT isin, MAX(bpdate) as max_date
+                FROM agg_analysis_data
+                GROUP BY isin
+            )
+            SELECT
+                a.isin,
+                a.ticker,
+                a.description,
+                a.country,
+                a.ytw as yield_pct,
+                a.oas as spread_bp,
+                a.oad as duration,
+                a.return_ytw as expected_return,
+                a.price,
+                a.coupon,
+                a.maturity,
+                a.rating_sp,
+                a.rating_moody,
+                CASE
+                    WHEN UPPER(a.ticker) IN ('{"', '".join(quasi_sovereigns)}') THEN 'quasi-sovereign'
+                    ELSE 'sovereign'
+                END as issuer_type
+            FROM agg_analysis_data a
+            JOIN latest l ON a.isin = l.isin AND a.bpdate = l.max_date
+            WHERE {where_clause}
+                AND a.return_ytw IS NOT NULL
+                AND a.ytw IS NOT NULL
+                {exclusion_sql}
+            ORDER BY {sort_column} DESC
+            LIMIT {limit}
+            """
+
+            df = query_bigquery(sql, client_id)
+
+            if df.empty:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "bonds": [],
+                        "count": 0,
+                        "message": "No bonds found matching criteria. Try relaxing filters."
+                    }, indent=2)
+                )]
+
+            # Format results
+            bonds = []
+            for _, row in df.iterrows():
+                bond = {
+                    'isin': row['isin'],
+                    'ticker': row['ticker'],
+                    'description': row['description'],
+                    'country': row['country'],
+                    'issuer_type': row['issuer_type'],
+                    'yield': f"{row['yield_pct']:.2f}%",
+                    'spread': f"{row['spread_bp']:.0f}bp",
+                    'duration': f"{row['duration']:.2f}y",
+                    'expected_return': f"{row['expected_return']:.2f}%",
+                    'price': f"{row['price']:.2f}",
+                    'coupon': f"{row['coupon']:.2f}%" if row.get('coupon') else None,
+                    'maturity': str(row['maturity']) if row.get('maturity') else None,
+                    'rating': row.get('rating_sp') or row.get('rating_moody')
+                }
+                bonds.append(bond)
+
+            result = {
+                'bonds': bonds,
+                'count': len(bonds),
+                'filters_applied': {
+                    'country': country,
+                    'ticker': ticker_pattern,
+                    'issuer_type': issuer_type,
+                    'min_expected_return': min_expected_return,
+                    'max_duration': max_duration,
+                    'exclude_portfolio': exclude_portfolio,
+                    'sort_by': sort_by
+                },
+                'tip': "Use expected_return > 5% for attractive opportunities. Quasi-sovereigns include Pemex, Codelco, Petrobras etc."
+            }
+
+            return [TextContent(
+                type="text",
+                text=json.dumps(result, indent=2, default=str)
+            )]
+
+        elif name == "suggest_rebalancing":
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
+            focus = arguments.get("focus", "all")
+            max_suggestions = arguments.get("max_suggestions", 5)
+            import pandas as pd
+
+            # Get holdings with analytics (expected_return, duration, yield, spread)
+            holdings_sql = f"""
+            WITH net_holdings AS (
+                SELECT
+                    t.isin, t.ticker, t.description, t.country,
+                    SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.par_amount ELSE 0 END) -
+                    SUM(CASE WHEN t.transaction_type = 'SELL' THEN t.par_amount ELSE 0 END) as par_amount,
+                    SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.market_value ELSE 0 END) -
+                    SUM(CASE WHEN t.transaction_type = 'SELL' THEN t.market_value ELSE 0 END) as market_value
+                FROM transactions t
+                WHERE t.portfolio_id = '{portfolio_id}'
+                    AND t.status = 'settled'
+                    AND t.isin != 'CASH'
+                GROUP BY t.isin, t.ticker, t.description, t.country
+                HAVING par_amount > 0
+            ),
+            latest_analytics AS (
+                SELECT isin, MAX(bpdate) as max_date
+                FROM agg_analysis_data
+                GROUP BY isin
+            )
+            SELECT
+                h.isin, h.ticker, h.description, h.country,
+                h.par_amount, h.market_value,
+                COALESCE(a.return_ytw, 0) as expected_return,
+                COALESCE(a.ytw, 0) as yield,
+                COALESCE(a.oad, 0) as duration,
+                COALESCE(a.oas, 0) as spread
+            FROM net_holdings h
+            LEFT JOIN latest_analytics l ON h.isin = l.isin
+            LEFT JOIN agg_analysis_data a ON h.isin = a.isin AND a.bpdate = l.max_date
+            """
+            holdings_df = query_bigquery(holdings_sql, client_id)
+
+            # Get cash position
+            cash_sql = f"""
+            SELECT
+                (SELECT COALESCE(SUM(market_value), 0) FROM transactions
+                 WHERE portfolio_id = '{portfolio_id}' AND ticker = 'CASH' AND transaction_type = 'INITIAL') -
+                (SELECT COALESCE(SUM(market_value), 0) FROM transactions
+                 WHERE portfolio_id = '{portfolio_id}' AND status = 'settled' AND transaction_type = 'BUY' AND isin != 'CASH') +
+                (SELECT COALESCE(SUM(market_value), 0) FROM transactions
+                 WHERE portfolio_id = '{portfolio_id}' AND status = 'settled' AND transaction_type = 'SELL') as net_cash
+            """
+            cash_df = query_bigquery(cash_sql, client_id)
+            net_cash = float(cash_df.iloc[0]['net_cash']) if not cash_df.empty else 0.0
+
+            # Calculate portfolio metrics
+            total_nav = holdings_df['market_value'].sum() + net_cash
+            holdings_df['weight_pct'] = holdings_df['market_value'] / total_nav * 100
+
+            # Group by country and issuer
+            country_weights = holdings_df.groupby('country')['weight_pct'].sum().to_dict()
+            issuer_weights = holdings_df.groupby('ticker')['weight_pct'].sum().to_dict()
+
+            # Run compliance check
+            compliance_result = check_compliance(holdings_df, net_cash)
+            metrics = compliance_result.metrics
+
+            suggestions = {
+                'sell_candidates': [],
+                'buy_candidates': [],
+                'summary': {}
+            }
+
+            # === SELL SUGGESTIONS ===
+
+            # 1. Compliance: Countries over 20% limit
+            overweight_countries = {k: v for k, v in country_weights.items() if v > 20}
+            for country, weight in sorted(overweight_countries.items(), key=lambda x: x[1], reverse=True):
+                excess = weight - 20
+                country_bonds = holdings_df[holdings_df['country'] == country].sort_values('expected_return')
+                if not country_bonds.empty:
+                    worst_bond = country_bonds.iloc[0]
+                    suggestions['sell_candidates'].append({
+                        'reason': f"Country overweight ({weight:.1f}% > 20% limit)",
+                        'ticker': worst_bond['ticker'],
+                        'country': country,
+                        'current_weight': f"{worst_bond['weight_pct']:.1f}%",
+                        'expected_return': f"{worst_bond['expected_return']:.2f}%",
+                        'suggested_action': f"Sell to reduce {country} by {excess:.1f}%",
+                        'priority': 'HIGH' if weight > 22 else 'MEDIUM'
+                    })
+
+            # 2. Issuers over 10% (hard limit breach)
+            overweight_issuers = {k: v for k, v in issuer_weights.items() if v > 10}
+            for issuer, weight in sorted(overweight_issuers.items(), key=lambda x: x[1], reverse=True):
+                excess = weight - 10
+                issuer_bonds = holdings_df[holdings_df['ticker'] == issuer].sort_values('expected_return')
+                if not issuer_bonds.empty:
+                    worst_bond = issuer_bonds.iloc[0]
+                    suggestions['sell_candidates'].append({
+                        'reason': f"Issuer overweight ({weight:.1f}% > 10% limit) - BREACH",
+                        'ticker': worst_bond['ticker'],
+                        'country': worst_bond['country'],
+                        'current_weight': f"{worst_bond['weight_pct']:.1f}%",
+                        'expected_return': f"{worst_bond['expected_return']:.2f}%",
+                        'suggested_action': f"MUST SELL to reduce {issuer} by {excess:.1f}%",
+                        'priority': 'CRITICAL'
+                    })
+
+            # 3. Low expected return bonds (bottom 20% by return)
+            if focus in ['returns', 'all'] and len(holdings_df) > 5:
+                low_return_threshold = holdings_df['expected_return'].quantile(0.2)
+                low_return_bonds = holdings_df[holdings_df['expected_return'] <= low_return_threshold].sort_values('expected_return')
+                for _, bond in low_return_bonds.head(3).iterrows():
+                    # Skip if already suggested
+                    if any(s['ticker'] == bond['ticker'] for s in suggestions['sell_candidates']):
+                        continue
+                    suggestions['sell_candidates'].append({
+                        'reason': f"Low expected return (bottom quintile)",
+                        'ticker': bond['ticker'],
+                        'country': bond['country'],
+                        'current_weight': f"{bond['weight_pct']:.1f}%",
+                        'expected_return': f"{bond['expected_return']:.2f}%",
+                        'suggested_action': f"Consider selling - low return vs peers",
+                        'priority': 'LOW'
+                    })
+
+            # === BUY SUGGESTIONS ===
+
+            # 1. Underweight countries (room to add)
+            avg_country_weight = 100 / len(country_weights) if country_weights else 0
+            underweight_countries = {k: v for k, v in country_weights.items() if v < avg_country_weight * 0.5 and v > 0}
+
+            # Get high-return bonds from watchlist for underweight countries
+            if focus in ['diversification', 'all'] and underweight_countries:
+                watchlist_sql = f"""
+                WITH latest AS (
+                    SELECT isin, MAX(bpdate) as max_date
+                    FROM agg_analysis_data
+                    GROUP BY isin
+                )
+                SELECT a.isin, a.ticker, a.description, a.country,
+                       a.return_ytw as expected_return, a.ytw as yield, a.oad as duration
+                FROM agg_analysis_data a
+                JOIN latest l ON a.isin = l.isin AND a.bpdate = l.max_date
+                WHERE a.country IN ({','.join([f"'{c}'" for c in underweight_countries.keys()])})
+                    AND a.return_ytw > 0
+                    AND a.isin NOT IN (SELECT DISTINCT isin FROM transactions WHERE portfolio_id = '{portfolio_id}' AND status = 'settled')
+                ORDER BY a.return_ytw DESC
+                LIMIT 10
+                """
+                try:
+                    watchlist_df = query_bigquery(watchlist_sql, client_id)
+                    for _, bond in watchlist_df.head(3).iterrows():
+                        current_country_weight = country_weights.get(bond['country'], 0)
+                        headroom = 20 - current_country_weight
+                        suggestions['buy_candidates'].append({
+                            'reason': f"Underweight country ({bond['country']}: {current_country_weight:.1f}%)",
+                            'ticker': bond['ticker'],
+                            'isin': bond['isin'],
+                            'country': bond['country'],
+                            'expected_return': f"{bond['expected_return']:.2f}%",
+                            'yield': f"{bond['yield']:.2f}%",
+                            'suggested_action': f"Can add up to {headroom:.1f}% to {bond['country']}",
+                            'priority': 'MEDIUM'
+                        })
+                except:
+                    pass  # Watchlist query failed, skip buy suggestions
+
+            # 2. High return opportunities from watchlist (if cash available)
+            if focus in ['returns', 'all'] and net_cash > 200000:
+                high_return_sql = f"""
+                WITH latest AS (
+                    SELECT isin, MAX(bpdate) as max_date
+                    FROM agg_analysis_data
+                    GROUP BY isin
+                )
+                SELECT a.isin, a.ticker, a.description, a.country,
+                       a.return_ytw as expected_return, a.ytw as yield, a.oad as duration
+                FROM agg_analysis_data a
+                JOIN latest l ON a.isin = l.isin AND a.bpdate = l.max_date
+                WHERE a.return_ytw > 5.0
+                    AND a.isin NOT IN (SELECT DISTINCT isin FROM transactions WHERE portfolio_id = '{portfolio_id}' AND status = 'settled')
+                ORDER BY a.return_ytw DESC
+                LIMIT 5
+                """
+                try:
+                    high_return_df = query_bigquery(high_return_sql, client_id)
+                    for _, bond in high_return_df.head(2).iterrows():
+                        current_country_weight = country_weights.get(bond['country'], 0)
+                        if current_country_weight < 18:  # Room to add
+                            # Skip if already suggested
+                            if any(b.get('isin') == bond['isin'] for b in suggestions['buy_candidates']):
+                                continue
+                            suggestions['buy_candidates'].append({
+                                'reason': f"High expected return opportunity",
+                                'ticker': bond['ticker'],
+                                'isin': bond['isin'],
+                                'country': bond['country'],
+                                'expected_return': f"{bond['expected_return']:.2f}%",
+                                'yield': f"{bond['yield']:.2f}%",
+                                'suggested_action': f"Buy with available cash (${net_cash/1000:.0f}k available)",
+                                'priority': 'MEDIUM'
+                            })
+                except:
+                    pass
+
+            # Build summary
+            suggestions['summary'] = {
+                'portfolio_status': 'COMPLIANT' if compliance_result.is_compliant else 'NON-COMPLIANT',
+                'available_cash': f"${net_cash/1000:.0f}k",
+                'total_nav': f"${total_nav/1_000_000:.2f}M",
+                'num_holdings': len(holdings_df),
+                'focus_area': focus,
+                'sell_suggestions': len(suggestions['sell_candidates']),
+                'buy_suggestions': len(suggestions['buy_candidates']),
+                'top_priority': next((s['priority'] for s in suggestions['sell_candidates'] if s['priority'] == 'CRITICAL'),
+                                    next((s['priority'] for s in suggestions['sell_candidates'] if s['priority'] == 'HIGH'), 'NONE'))
+            }
+
+            # Limit suggestions
+            suggestions['sell_candidates'] = suggestions['sell_candidates'][:max_suggestions]
+            suggestions['buy_candidates'] = suggestions['buy_candidates'][:max_suggestions]
+
+            return [TextContent(
+                type="text",
+                text=json.dumps(suggestions, indent=2, default=str)
             )]
 
         else:
