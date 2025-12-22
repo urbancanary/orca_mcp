@@ -73,6 +73,34 @@ from orca_mcp.tools.compliance import (
     check_compliance_impact,
     compliance_to_dict
 )
+from orca_mcp.tools.external_mcps import (
+    # NFA
+    get_nfa_rating,
+    get_nfa_batch,
+    search_nfa_by_rating,
+    # Rating
+    get_credit_rating,
+    get_credit_ratings_batch,
+    # Country Mapping
+    standardize_country,
+    get_country_info,
+    # FRED
+    get_fred_series,
+    search_fred_series,
+    get_treasury_rates,
+    # Sovereign Classification
+    classify_issuer,
+    classify_issuers_batch,
+    filter_by_issuer_type,
+    get_issuer_summary,
+    # IMF (external MCP with AI)
+    get_imf_indicator,
+    compare_imf_countries,
+    # World Bank
+    get_worldbank_indicator,
+    search_worldbank_indicators,
+    get_worldbank_country_profile,
+)
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -759,6 +787,362 @@ async def list_tools() -> list[Tool]:
                     }
                 },
                 "required": []
+            }
+        ),
+
+        # ============================================================================
+        # EXTERNAL MCP TOOLS - Gateway to Cloudflare Worker MCPs
+        # ============================================================================
+
+        # NFA MCP Tools
+        Tool(
+            name="get_nfa_rating",
+            description="Get NFA (Net Foreign Assets) star rating for a country. NFA ratings range from 1★ (extreme external deficit, NFA < -100% GDP) to 7★ (extremely strong, NFA >= 100% GDP). Critical for assessing sovereign creditworthiness and external vulnerability.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "country": {
+                        "type": "string",
+                        "description": "Country name (e.g., 'Colombia', 'Brazil', 'Saudi Arabia')"
+                    },
+                    "year": {
+                        "type": "integer",
+                        "description": "Specific year (optional, default: latest available)"
+                    },
+                    "history": {
+                        "type": "boolean",
+                        "description": "If true, return full historical time series (1970-2023)"
+                    }
+                },
+                "required": ["country"]
+            }
+        ),
+        Tool(
+            name="get_nfa_batch",
+            description="Get NFA ratings for multiple countries at once. Efficient for portfolio-wide analysis.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "countries": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of country names"
+                    },
+                    "year": {
+                        "type": "integer",
+                        "description": "Specific year (optional)"
+                    }
+                },
+                "required": ["countries"]
+            }
+        ),
+        Tool(
+            name="search_nfa_by_rating",
+            description="Find countries by NFA star rating. Useful for screening investment universe by external position strength.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "rating": {
+                        "type": "integer",
+                        "description": "Exact rating to search (1-7)"
+                    },
+                    "min_rating": {
+                        "type": "integer",
+                        "description": "Minimum rating (inclusive)"
+                    },
+                    "max_rating": {
+                        "type": "integer",
+                        "description": "Maximum rating (inclusive)"
+                    },
+                    "year": {
+                        "type": "integer",
+                        "description": "Specific year (optional)"
+                    }
+                },
+                "required": []
+            }
+        ),
+
+        # Rating MCP Tools
+        Tool(
+            name="get_credit_rating",
+            description="Get sovereign credit rating for a country. Returns rating from S&P, Moody's, or Fitch with numeric equivalent and outlook.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "country": {
+                        "type": "string",
+                        "description": "Country name"
+                    }
+                },
+                "required": ["country"]
+            }
+        ),
+        Tool(
+            name="get_credit_ratings_batch",
+            description="Get credit ratings for multiple countries. Efficient for portfolio analysis.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "countries": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of country names"
+                    }
+                },
+                "required": ["countries"]
+            }
+        ),
+
+        # Country Mapping MCP Tools
+        Tool(
+            name="standardize_country",
+            description="Standardize a country name to canonical form. Handles variations like 'UAE' vs 'United Arab Emirates', 'Korea' vs 'South Korea'. Essential for data consistency.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "country": {
+                        "type": "string",
+                        "description": "Country name in any format"
+                    }
+                },
+                "required": ["country"]
+            }
+        ),
+        Tool(
+            name="get_country_info",
+            description="Get comprehensive country information including ISO codes, region, income level, and all known aliases.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "country": {
+                        "type": "string",
+                        "description": "Country name"
+                    }
+                },
+                "required": ["country"]
+            }
+        ),
+
+        # FRED MCP Tools
+        Tool(
+            name="get_fred_series",
+            description="Get Federal Reserve Economic Data (FRED) series. Common series: DGS10 (10Y Treasury), DGS2 (2Y Treasury), CPIAUCSL (CPI), UNRATE (unemployment), FEDFUNDS (Fed Funds rate).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "series_id": {
+                        "type": "string",
+                        "description": "FRED series ID (e.g., 'DGS10', 'CPIAUCSL', 'UNRATE')"
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "Start date (YYYY-MM-DD, optional)"
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "End date (YYYY-MM-DD, optional)"
+                    },
+                    "analyze": {
+                        "type": "boolean",
+                        "description": "If true, include AI analysis of the data"
+                    }
+                },
+                "required": ["series_id"]
+            }
+        ),
+        Tool(
+            name="search_fred_series",
+            description="Search for FRED data series by keyword. Returns matching series with IDs and descriptions.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search term (e.g., 'treasury', 'inflation', 'unemployment')"
+                    }
+                },
+                "required": ["query"]
+            }
+        ),
+        Tool(
+            name="get_treasury_rates",
+            description="Get current US Treasury rates across the entire yield curve (1M to 30Y). Essential for fixed income analysis and spread calculations.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        ),
+
+        # Sovereign Classification MCP Tools
+        Tool(
+            name="classify_issuer",
+            description="Classify a bond issuer by ISIN as sovereign, quasi-sovereign, or corporate. Quasi-sovereigns include state-owned enterprises like Pemex, Codelco, Petrobras.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "isin": {
+                        "type": "string",
+                        "description": "Bond ISIN"
+                    }
+                },
+                "required": ["isin"]
+            }
+        ),
+        Tool(
+            name="classify_issuers_batch",
+            description="Classify multiple bond issuers by ISIN. Efficient for portfolio analysis.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "isins": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of ISINs"
+                    }
+                },
+                "required": ["isins"]
+            }
+        ),
+        Tool(
+            name="filter_by_issuer_type",
+            description="Get all issuers of a specific type. Useful for building filtered watchlists.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "issuer_type": {
+                        "type": "string",
+                        "enum": ["sovereign", "quasi-sovereign", "corporate"],
+                        "description": "Type of issuer to filter"
+                    }
+                },
+                "required": ["issuer_type"]
+            }
+        ),
+        Tool(
+            name="get_issuer_summary",
+            description="Get AI-generated summary for an issuer including business description, credit factors, and investment considerations.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "issuer": {
+                        "type": "string",
+                        "description": "Issuer name or ticker (e.g., 'Pemex', 'Codelco', 'Colombia')"
+                    }
+                },
+                "required": ["issuer"]
+            }
+        ),
+
+        # IMF MCP Tools (with AI analysis)
+        Tool(
+            name="get_imf_indicator_external",
+            description="Get IMF economic indicator data with optional AI analysis. This uses the IMF MCP which includes Haiku analysis. Common indicators: NGDP_RPCH (GDP growth), PCPIPCH (inflation), LUR (unemployment), GGXWDG_NGDP (government debt/GDP).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "indicator": {
+                        "type": "string",
+                        "description": "IMF indicator code"
+                    },
+                    "country": {
+                        "type": "string",
+                        "description": "Country name or ISO code"
+                    },
+                    "start_year": {
+                        "type": "integer",
+                        "description": "Start year (optional)"
+                    },
+                    "end_year": {
+                        "type": "integer",
+                        "description": "End year (optional)"
+                    },
+                    "analyze": {
+                        "type": "boolean",
+                        "description": "If true, include AI analysis via Haiku"
+                    }
+                },
+                "required": ["indicator", "country"]
+            }
+        ),
+        Tool(
+            name="compare_imf_countries",
+            description="Compare IMF indicator across multiple countries. Useful for relative value analysis.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "indicator": {
+                        "type": "string",
+                        "description": "IMF indicator code"
+                    },
+                    "countries": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of country names"
+                    },
+                    "year": {
+                        "type": "integer",
+                        "description": "Specific year (optional, default: latest)"
+                    }
+                },
+                "required": ["indicator", "countries"]
+            }
+        ),
+
+        # World Bank MCP Tools
+        Tool(
+            name="get_worldbank_indicator",
+            description="Get World Bank development indicator data. Common indicators: NY.GDP.PCAP.CD (GDP per capita), SP.POP.TOTL (population), SE.ADT.LITR.ZS (literacy rate).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "indicator": {
+                        "type": "string",
+                        "description": "World Bank indicator code"
+                    },
+                    "country": {
+                        "type": "string",
+                        "description": "Country name or ISO code"
+                    },
+                    "start_year": {
+                        "type": "integer",
+                        "description": "Start year (optional)"
+                    },
+                    "end_year": {
+                        "type": "integer",
+                        "description": "End year (optional)"
+                    }
+                },
+                "required": ["indicator", "country"]
+            }
+        ),
+        Tool(
+            name="search_worldbank_indicators",
+            description="Search for World Bank indicators by keyword. Returns matching indicators with codes and descriptions.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search term (e.g., 'gdp', 'population', 'education')"
+                    }
+                },
+                "required": ["query"]
+            }
+        ),
+        Tool(
+            name="get_worldbank_country_profile",
+            description="Get comprehensive country development profile from World Bank including key economic and social indicators.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "country": {
+                        "type": "string",
+                        "description": "Country name or ISO code"
+                    }
+                },
+                "required": ["country"]
             }
         )
     ]
@@ -2288,6 +2672,129 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                 type="text",
                 text=json.dumps(suggestions, indent=2, default=str)
             )]
+
+        # ============================================================================
+        # EXTERNAL MCP TOOL HANDLERS
+        # ============================================================================
+
+        # NFA MCP
+        elif name == "get_nfa_rating":
+            country = arguments["country"]
+            year = arguments.get("year")
+            history = arguments.get("history", False)
+            result = get_nfa_rating(country, year, history)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "get_nfa_batch":
+            countries = arguments["countries"]
+            year = arguments.get("year")
+            result = get_nfa_batch(countries, year)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "search_nfa_by_rating":
+            rating = arguments.get("rating")
+            min_rating = arguments.get("min_rating")
+            max_rating = arguments.get("max_rating")
+            year = arguments.get("year")
+            result = search_nfa_by_rating(rating, min_rating, max_rating, year)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        # Rating MCP
+        elif name == "get_credit_rating":
+            country = arguments["country"]
+            result = get_credit_rating(country)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "get_credit_ratings_batch":
+            countries = arguments["countries"]
+            result = get_credit_ratings_batch(countries)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        # Country Mapping MCP
+        elif name == "standardize_country":
+            country = arguments["country"]
+            result = standardize_country(country)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "get_country_info":
+            country = arguments["country"]
+            result = get_country_info(country)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        # FRED MCP
+        elif name == "get_fred_series":
+            series_id = arguments["series_id"]
+            start_date = arguments.get("start_date")
+            end_date = arguments.get("end_date")
+            analyze = arguments.get("analyze", False)
+            result = get_fred_series(series_id, start_date, end_date, analyze)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "search_fred_series":
+            query = arguments["query"]
+            result = search_fred_series(query)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "get_treasury_rates":
+            result = get_treasury_rates()
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        # Sovereign Classification MCP
+        elif name == "classify_issuer":
+            isin = arguments["isin"]
+            result = classify_issuer(isin)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "classify_issuers_batch":
+            isins = arguments["isins"]
+            result = classify_issuers_batch(isins)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "filter_by_issuer_type":
+            issuer_type = arguments["issuer_type"]
+            result = filter_by_issuer_type(issuer_type)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "get_issuer_summary":
+            issuer = arguments["issuer"]
+            result = get_issuer_summary(issuer)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        # IMF MCP (external with AI)
+        elif name == "get_imf_indicator_external":
+            indicator = arguments["indicator"]
+            country = arguments["country"]
+            start_year = arguments.get("start_year")
+            end_year = arguments.get("end_year")
+            analyze = arguments.get("analyze", False)
+            result = get_imf_indicator(indicator, country, start_year, end_year, analyze)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "compare_imf_countries":
+            indicator = arguments["indicator"]
+            countries = arguments["countries"]
+            year = arguments.get("year")
+            result = compare_imf_countries(indicator, countries, year)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        # World Bank MCP
+        elif name == "get_worldbank_indicator":
+            indicator = arguments["indicator"]
+            country = arguments["country"]
+            start_year = arguments.get("start_year")
+            end_year = arguments.get("end_year")
+            result = get_worldbank_indicator(indicator, country, start_year, end_year)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "search_worldbank_indicators":
+            query = arguments["query"]
+            result = search_worldbank_indicators(query)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "get_worldbank_country_profile":
+            country = arguments["country"]
+            result = get_worldbank_country_profile(country)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         else:
             return [TextContent(
