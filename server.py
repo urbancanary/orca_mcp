@@ -101,6 +101,15 @@ from orca_mcp.tools.external_mcps import (
     search_worldbank_indicators,
     get_worldbank_country_profile,
 )
+from orca_mcp.tools.query_router import route_query, ORCA_QUERY_TOOL_DESCRIPTION
+from orca_mcp.tools.cloudflare_d1 import get_watchlist, get_watchlist_complete
+from orca_mcp.tools.sovereign_reports import (
+    list_available_countries as sovereign_list_countries,
+    get_sovereign_report,
+    get_sovereign_section,
+    search_sovereign_reports,
+    get_sovereign_comparison,
+)
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -114,6 +123,22 @@ server = Server("orca-mcp")
 async def list_tools() -> list[Tool]:
     """List available Orca MCP tools"""
     return [
+        # ========== ROUTER TOOL (Primary Entry Point) ==========
+        Tool(
+            name="orca_query",
+            description=ORCA_QUERY_TOOL_DESCRIPTION,
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language query describing what data you need"
+                    }
+                },
+                "required": ["query"]
+            }
+        ),
+        # ========== LEGACY TOOLS (Will be hidden after router validation) ==========
         Tool(
             name="get_client_info",
             description="Get information about the current client configuration",
@@ -214,6 +239,24 @@ async def list_tools() -> list[Tool]:
                     }
                 },
                 "required": ["portfolio_id"]
+            }
+        ),
+        Tool(
+            name="get_watchlist",
+            description="Get the bond watchlist - candidate bonds for purchase. Returns ISINs with full analytics (YTW, OAD, OAS, ratings, country, etc.) from D1 database.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "full_details": {
+                        "type": "boolean",
+                        "description": "If true, include full bond analytics. If false, just ISINs and basic info (default: true)"
+                    },
+                    "client_id": {
+                        "type": "string",
+                        "description": "Client identifier (optional)"
+                    }
+                },
+                "required": []
             }
         ),
         Tool(
@@ -793,102 +836,51 @@ async def list_tools() -> list[Tool]:
         # ============================================================================
         # EXTERNAL MCP TOOLS - Gateway to Cloudflare Worker MCPs
         # ============================================================================
-
+        # ========== RATING TOOLS (kept visible until router API key fixed) ==========
         # NFA MCP Tools
         Tool(
             name="get_nfa_rating",
-            description="Get NFA (Net Foreign Assets) star rating for a country. NFA ratings range from 1★ (extreme external deficit, NFA < -100% GDP) to 7★ (extremely strong, NFA >= 100% GDP). Critical for assessing sovereign creditworthiness and external vulnerability.",
+            description="Get NFA (Net Foreign Assets) star rating for a country (1-7 scale).",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "country": {
-                        "type": "string",
-                        "description": "Country name (e.g., 'Colombia', 'Brazil', 'Saudi Arabia')"
-                    },
-                    "year": {
-                        "type": "integer",
-                        "description": "Specific year (optional, default: latest available)"
-                    },
-                    "history": {
-                        "type": "boolean",
-                        "description": "If true, return full historical time series (1970-2023)"
-                    }
+                    "country": {"type": "string", "description": "Country name"},
+                    "year": {"type": "integer", "description": "Specific year (optional)"},
+                    "history": {"type": "boolean", "description": "Return full history"}
                 },
                 "required": ["country"]
             }
         ),
         Tool(
             name="get_nfa_batch",
-            description="Get NFA ratings for multiple countries at once. Efficient for portfolio-wide analysis.",
+            description="Get NFA ratings for multiple countries.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "countries": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "List of country names"
-                    },
-                    "year": {
-                        "type": "integer",
-                        "description": "Specific year (optional)"
-                    }
+                    "countries": {"type": "array", "items": {"type": "string"}},
+                    "year": {"type": "integer"}
                 },
                 "required": ["countries"]
             }
         ),
         Tool(
-            name="search_nfa_by_rating",
-            description="Find countries by NFA star rating. Useful for screening investment universe by external position strength.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "rating": {
-                        "type": "integer",
-                        "description": "Exact rating to search (1-7)"
-                    },
-                    "min_rating": {
-                        "type": "integer",
-                        "description": "Minimum rating (inclusive)"
-                    },
-                    "max_rating": {
-                        "type": "integer",
-                        "description": "Maximum rating (inclusive)"
-                    },
-                    "year": {
-                        "type": "integer",
-                        "description": "Specific year (optional)"
-                    }
-                },
-                "required": []
-            }
-        ),
-
-        # Rating MCP Tools
-        Tool(
             name="get_credit_rating",
-            description="Get sovereign credit rating for a country. Returns rating from S&P, Moody's, or Fitch with numeric equivalent and outlook.",
+            description="Get sovereign credit rating (S&P, Moody's, Fitch) for a country.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "country": {
-                        "type": "string",
-                        "description": "Country name"
-                    }
+                    "country": {"type": "string", "description": "Country name"}
                 },
                 "required": ["country"]
             }
         ),
         Tool(
             name="get_credit_ratings_batch",
-            description="Get credit ratings for multiple countries. Efficient for portfolio analysis.",
+            description="Get credit ratings for multiple countries.",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "countries": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "List of country names"
-                    }
+                    "countries": {"type": "array", "items": {"type": "string"}}
                 },
                 "required": ["countries"]
             }
@@ -1144,6 +1136,81 @@ async def list_tools() -> list[Tool]:
                 },
                 "required": ["country"]
             }
+        ),
+        # ========== SOVEREIGN CREDIT REPORTS ==========
+        Tool(
+            name="sovereign_list_countries",
+            description="List all available sovereign credit reports. Returns country names with full credit analysis available.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        ),
+        Tool(
+            name="sovereign_get_report",
+            description="Get the full sovereign credit report for a country. Returns comprehensive credit analysis including ratings, economic indicators, fiscal policy, political assessment, and outlook.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "country": {
+                        "type": "string",
+                        "description": "Country name (e.g., 'Brazil', 'Kazakhstan', 'Turkey')"
+                    }
+                },
+                "required": ["country"]
+            }
+        ),
+        Tool(
+            name="sovereign_get_section",
+            description="Get a specific section from a sovereign credit report. Sections: summary, ratings, economic, fiscal, external, political, banking, outlook, strengths, vulnerabilities.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "country": {
+                        "type": "string",
+                        "description": "Country name"
+                    },
+                    "section": {
+                        "type": "string",
+                        "description": "Section name: summary, ratings, economic, fiscal, external, political, banking, outlook, strengths, vulnerabilities"
+                    }
+                },
+                "required": ["country", "section"]
+            }
+        ),
+        Tool(
+            name="sovereign_search",
+            description="Search across all sovereign credit reports for a term or phrase. Returns matching excerpts from each country.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search term or phrase"
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Maximum results per country (default 5)"
+                    }
+                },
+                "required": ["query"]
+            }
+        ),
+        Tool(
+            name="sovereign_compare",
+            description="Compare key credit metrics across multiple countries. Returns ratings, outlook, strengths, and risks for each.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "countries": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of country names to compare"
+                    }
+                },
+                "required": ["countries"]
+            }
         )
     ]
 
@@ -1156,8 +1223,8 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
         client_id = arguments.get("client_id")
         config = get_client_config(client_id)
 
-        # Access check
-        if not config.is_tool_allowed(name):
+        # Access check (skip for orca_query as it routes internally)
+        if name != "orca_query" and not config.is_tool_allowed(name):
             return [TextContent(
                 type="text",
                 text=json.dumps({
@@ -1167,7 +1234,52 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                 }, indent=2)
             )]
 
-        if name == "get_client_info":
+        # ========== ROUTER HANDLER ==========
+        if name == "orca_query":
+            query = arguments.get("query", "")
+            if not query:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({"error": "Query is required"}, indent=2)
+                )]
+
+            # Route the query using Haiku
+            routing_result = await route_query(query)
+
+            # Check for clarification needed
+            if routing_result.get("tool") is None:
+                if "clarification" in routing_result:
+                    return [TextContent(
+                        type="text",
+                        text=json.dumps({
+                            "status": "clarification_needed",
+                            "message": routing_result["clarification"]
+                        }, indent=2)
+                    )]
+                elif "error" in routing_result:
+                    return [TextContent(
+                        type="text",
+                        text=json.dumps({
+                            "error": "Routing failed",
+                            "details": routing_result.get("error")
+                        }, indent=2)
+                    )]
+
+            # Execute the routed tool
+            routed_tool = routing_result["tool"]
+            routed_args = routing_result.get("args", {})
+
+            logger.info(f"Router executing: {routed_tool} with args: {routed_args}")
+
+            # Recursively call this handler with the routed tool
+            # Add client_id to args if not present
+            if "client_id" not in routed_args and client_id:
+                routed_args["client_id"] = client_id
+
+            return await call_tool(routed_tool, routed_args)
+
+        # ========== LEGACY TOOL HANDLERS ==========
+        elif name == "get_client_info":
             config = get_client_config(client_id)
 
             result = {
@@ -1277,6 +1389,46 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             return [TextContent(
                 type="text",
                 text=json.dumps(result, indent=2)
+            )]
+
+        elif name == "get_watchlist":
+            full_details = arguments.get("full_details", True)
+
+            if full_details:
+                # Use /prices/latest which has consolidated watchlist + analytics
+                import urllib.request
+                pricing_url = os.environ.get('GA10_PRICING_URL', 'https://ga10-pricing.urbancanary.workers.dev')
+                url = f"{pricing_url}/prices/latest"
+
+                try:
+                    req = urllib.request.Request(url)
+                    with urllib.request.urlopen(req, timeout=15) as response:
+                        data = json.loads(response.read().decode())
+                        prices = data.get('prices', [])
+
+                        result = {
+                            "watchlist": prices,
+                            "count": len(prices),
+                            "source": "Cloudflare D1 (consolidated)",
+                            "columns": ["isin", "description", "cbonds_country", "price", "yield_to_maturity", "modified_duration", "spread", "maturity_date"]
+                        }
+                except Exception as e:
+                    logger.error(f"Failed to fetch watchlist: {e}")
+                    result = {"watchlist": [], "count": 0, "error": str(e)}
+            else:
+                df = get_watchlist(client_id)
+                if df.empty:
+                    result = {"watchlist": [], "count": 0, "message": "No bonds in watchlist"}
+                else:
+                    result = {
+                        "watchlist": df.to_dict(orient='records'),
+                        "count": len(df),
+                        "source": "Cloudflare D1"
+                    }
+
+            return [TextContent(
+                type="text",
+                text=json.dumps(result, indent=2, default=str)
             )]
 
         elif name == "get_service_info":
@@ -2794,6 +2946,33 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
         elif name == "get_worldbank_country_profile":
             country = arguments["country"]
             result = get_worldbank_country_profile(country)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        # ========== SOVEREIGN CREDIT REPORTS ==========
+        elif name == "sovereign_list_countries":
+            result = sovereign_list_countries()
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "sovereign_get_report":
+            country = arguments["country"]
+            result = get_sovereign_report(country)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "sovereign_get_section":
+            country = arguments["country"]
+            section = arguments["section"]
+            result = get_sovereign_section(country, section)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "sovereign_search":
+            query = arguments["query"]
+            max_results = arguments.get("max_results", 5)
+            result = search_sovereign_reports(query, max_results)
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "sovereign_compare":
+            countries = arguments["countries"]
+            result = get_sovereign_comparison(countries)
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         else:

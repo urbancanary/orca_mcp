@@ -1,0 +1,246 @@
+"""
+Orca Query Router - Multi-LLM routing for natural language queries to tools.
+
+This module provides intelligent routing from a single orca_query() entry point
+to the appropriate internal tool, reducing token usage by ~95%.
+
+Uses FallbackLLMClient with purpose="routing" to try cheapest models first:
+  Gemini Flash -> OpenAI Mini -> Grok Mini -> Haiku
+"""
+
+import json
+import logging
+import sys
+from typing import Any, Dict, Optional
+
+logger = logging.getLogger("orca-mcp.router")
+
+# Add mcp_central to path for imports
+MCP_CENTRAL_PATH = "/Users/andyseaman/Notebooks/mcp_central"
+if MCP_CENTRAL_PATH not in sys.path:
+    sys.path.insert(0, MCP_CENTRAL_PATH)
+
+
+def _get_fallback_client():
+    """
+    Get FallbackLLMClient configured for routing (cheapest models first).
+
+    Returns:
+        FallbackLLMClient instance or None if import fails
+    """
+    try:
+        from minerva_mcp.src.fallback_client import FallbackLLMClient
+        client = FallbackLLMClient(purpose="routing")
+        client.initialize()
+        return client
+    except Exception as e:
+        logger.error(f"Failed to initialize FallbackLLMClient: {e}")
+        return None
+
+# Router prompt that tells Haiku about available tools
+ROUTER_PROMPT = """You are a tool router for the Orca financial data system.
+
+Given a user query, determine which internal tool to call and extract the required arguments.
+
+AVAILABLE TOOLS:
+
+## Treasury & FRED (US Economic Data)
+1. get_treasury_rates() - No args. Returns full US Treasury yield curve (1M to 30Y). Use for: treasury rates, yield curve, government bonds
+2. get_fred_series(series_id, start_date?) - Get FRED time series. Common series:
+   - DGS10, DGS2, DGS30 = Treasury rates
+   - CPIAUCSL = CPI/Inflation
+   - UNRATE = Unemployment rate
+   - GDP = Gross Domestic Product
+   - FEDFUNDS = Fed Funds rate
+3. search_fred_series(query) - Search FRED by keyword
+
+## Credit Ratings
+4. get_nfa_rating(country, year?, history?) - NFA star rating (1-7 scale). Args: country name
+5. get_nfa_batch(countries, year?) - Multiple NFA ratings. Args: list of countries
+6. search_nfa_by_rating(rating?, min_rating?, max_rating?, year?) - Find countries by NFA rating
+7. get_credit_rating(country) - S&P/Moody's/Fitch sovereign rating
+8. get_credit_ratings_batch(countries) - Multiple credit ratings
+
+## IMF Data (International)
+9. get_imf_indicator(indicator, country, start_year?, end_year?, analyze?) - IMF indicators:
+   - NGDP_RPCH = Real GDP growth
+   - PCPIPCH = Inflation rate
+   - BCA_NGDPD = Current account % GDP
+10. compare_imf_countries(indicator, countries, year?) - Compare countries on IMF indicator
+
+## World Bank (Development Data)
+11. get_worldbank_indicator(indicator, country, start_year?, end_year?) - World Bank data:
+    - NY.GDP.PCAP.CD = GDP per capita
+    - SP.POP.TOTL = Population
+    - SI.POV.DDAY = Poverty rate
+12. search_worldbank_indicators(query) - Search World Bank indicators
+13. get_worldbank_country_profile(country) - Key development stats for country
+
+## Client Portfolio Data
+14. get_client_info(client_id?) - Client configuration
+15. get_client_holdings(client_id?, portfolio_id?) - Current portfolio holdings
+16. get_client_portfolios(client_id?) - List of portfolios
+17. get_client_transactions(client_id?, portfolio_id?, start_date?, end_date?) - Transaction history
+18. get_portfolio_cash(client_id?, portfolio_id?) - Cash positions
+19. query_client_data(sql, client_id?) - Custom SQL query on client data
+20. get_watchlist(full_details?, client_id?) - Bond watchlist (buy candidates) with analytics from D1
+
+## ETF Analysis
+20. get_etf_allocation(etf_name) - ETF holdings breakdown
+21. list_etf_allocations() - Available ETFs
+22. get_etf_country_exposure(etf_name) - Country weights in ETF
+
+## Compliance
+23. get_compliance_status(client_id?, portfolio_id?) - UCITS 5/10/40 compliance check
+24. check_trade_compliance_impact(portfolio_id, isin, trade_type, units) - Pre-trade compliance check
+25. suggest_rebalancing(portfolio_id, target_allocation) - Rebalancing suggestions
+
+## Bonds & Classification
+26. search_bonds_rvm(query, country?, rating?, maturity_min?, maturity_max?) - Search RVM bond database
+27. classify_issuer(isin) - Classify as sovereign/quasi-sovereign/corporate
+28. classify_issuers_batch(isins) - Batch classification
+29. get_issuer_summary(issuer) - AI summary of issuer
+
+## Staging (Trade Preparation)
+30. get_staging_holdings(client_id?, portfolio_id?) - Staged transactions
+31. add_staging_buy(portfolio_id, isin, units, price?) - Stage a buy order
+32. add_staging_sell(portfolio_id, isin, units, price?) - Stage a sell order
+
+## Video Search
+33. video_search(query) - Search video transcripts
+34. video_list() - List available videos
+35. video_get_transcript(video_id) - Get full transcript
+36. video_keyword_search(keyword, video_id?) - Find keyword mentions
+
+## Utilities
+37. standardize_country(country) - Normalize country name to standard form
+38. get_country_info(country) - Country details (ISO codes, region, etc.)
+
+RESPONSE FORMAT:
+Respond with valid JSON only, no other text:
+{{"tool": "tool_name", "args": {{"arg1": "value1"}}, "confidence": 0.95}}
+
+If the query is ambiguous or you need more information:
+{{"tool": null, "clarification": "Please specify which country you'd like the rating for."}}
+
+EXAMPLES:
+- "10Y treasury rate" -> {{"tool": "get_treasury_rates", "args": {{}}, "confidence": 0.99}}
+- "Colombia NFA rating" -> {{"tool": "get_nfa_rating", "args": {{"country": "Colombia"}}, "confidence": 0.98}}
+- "US inflation from FRED" -> {{"tool": "get_fred_series", "args": {{"series_id": "CPIAUCSL"}}, "confidence": 0.95}}
+- "Brazil GDP growth IMF" -> {{"tool": "get_imf_indicator", "args": {{"indicator": "NGDP_RPCH", "country": "Brazil"}}, "confidence": 0.95}}
+- "Compare GDP: US, China, Germany" -> {{"tool": "compare_imf_countries", "args": {{"indicator": "NGDP_RPCH", "countries": ["United States", "China", "Germany"]}}, "confidence": 0.90}}
+- "my holdings" -> {{"tool": "get_client_holdings", "args": {{}}, "confidence": 0.95}}
+- "rating for" -> {{"tool": null, "clarification": "Please specify which country you'd like the rating for."}}
+
+USER QUERY: {query}
+"""
+
+
+async def route_query(query: str) -> Dict[str, Any]:
+    """
+    Use multi-LLM fallback to route a natural language query to the appropriate tool.
+
+    Tries models in cost order (cheapest first):
+      Gemini Flash -> OpenAI Mini -> Grok Mini -> Haiku
+
+    Args:
+        query: Natural language query from user
+
+    Returns:
+        Dict with 'tool', 'args', 'confidence', and 'model_used' or 'clarification' if ambiguous
+    """
+    result_text = ""
+
+    try:
+        # Get fallback client (tries cheapest models first)
+        client = _get_fallback_client()
+
+        if not client:
+            logger.error("FallbackLLMClient not available - router cannot function")
+            return {
+                "tool": None,
+                "error": "FallbackLLMClient initialization failed"
+            }
+
+        # System prompt for routing
+        system_prompt = "You are a tool router. Respond with valid JSON only, no other text."
+
+        # Call with fallback across providers
+        response = client.chat(
+            messages=[{
+                "role": "user",
+                "content": ROUTER_PROMPT.format(query=query)
+            }],
+            system=system_prompt,
+            max_tokens=300
+        )
+
+        if not response.success:
+            logger.error(f"All LLM providers failed: {response.error}")
+            return {
+                "tool": None,
+                "error": f"All routing providers failed: {response.error}"
+            }
+
+        result_text = response.text.strip()
+        model_used = f"{response.provider}/{response.model_used}"
+
+        # Parse JSON response
+        # Handle potential markdown code blocks
+        if result_text.startswith("```"):
+            result_text = result_text.split("```")[1]
+            if result_text.startswith("json"):
+                result_text = result_text[4:]
+            result_text = result_text.strip()
+
+        result = json.loads(result_text)
+
+        # Add model info to result
+        result["model_used"] = model_used
+
+        logger.info(f"Router [{model_used}]: '{query}' -> {result.get('tool')} (confidence: {result.get('confidence', 'N/A')})")
+
+        return result
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Router JSON parse error: {e}, response: {result_text}")
+        return {
+            "tool": None,
+            "error": f"Failed to parse router response: {e}",
+            "raw_response": result_text
+        }
+    except Exception as e:
+        logger.error(f"Router error: {e}")
+        return {
+            "tool": None,
+            "error": str(e)
+        }
+
+
+# Tool description for Claude Desktop discovery
+ORCA_QUERY_TOOL_DESCRIPTION = """Query Orca for financial and portfolio data using natural language.
+
+CAPABILITIES:
+- Treasury rates: Current US yield curve (1M to 30Y)
+- FRED data: US economic indicators (GDP, CPI, unemployment, Fed funds)
+- Credit ratings: Sovereign ratings from NFA (1-7 stars), S&P, Moody's, Fitch
+- IMF data: International GDP growth, inflation, current account by country
+- World Bank: Development indicators (poverty, population, GDP per capita)
+- Client data: Portfolios, holdings, transactions, cash positions
+- Watchlist: Bond buy candidates with full analytics (YTW, OAD, ratings)
+- ETF analysis: Holdings breakdown, country exposures
+- Compliance: UCITS 5/10/40 checks, pre-trade impact analysis
+- Bonds: RVM database search, issuer classification
+- Video: Search transcripts, get summaries
+
+EXAMPLES:
+- "What's the current 10Y treasury rate?"
+- "Get Colombia's NFA rating"
+- "Show me US inflation data from FRED"
+- "What's Brazil's GDP growth forecast from IMF?"
+- "Compare inflation: US, UK, Germany"
+- "Check compliance status for GA10"
+- "Search for bonds from Mexico rated BBB or higher"
+- "Show me the watchlist"
+
+Just describe what you need in natural language."""

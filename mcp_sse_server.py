@@ -707,7 +707,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             LIMIT {limit}
             """
             df = query_bigquery(sql, client_id)
-            return [TextContent(type="text", text=json.dumps(df.to_dict(orient='records'), indent=2, default=str))]
+            # Replace NaN with None for JSON compatibility
+            records = json.loads(df.to_json(orient='records', date_format='iso'))
+            return [TextContent(type="text", text=json.dumps(records, indent=2, default=str))]
 
         elif name == "get_portfolio_cash":
             portfolio_id = arguments.get("portfolio_id", "wnbf")
@@ -1037,15 +1039,53 @@ async def handle_sse(request):
     return Response()
 
 
+async def handle_call(request):
+    """
+    HTTP POST endpoint to call tools directly.
+    Allows Athena Streamlit to call Orca MCP tools without SSE.
+
+    POST /call
+    {
+        "tool": "get_client_holdings",
+        "args": {"portfolio_id": "wnbf", "staging_id": 1}
+    }
+    """
+    try:
+        body = await request.json()
+        tool_name = body.get("tool")
+        args = body.get("args", {})
+
+        if not tool_name:
+            return JSONResponse({"error": "Missing 'tool' parameter"}, status_code=400)
+
+        # Call the tool
+        result = await call_tool(tool_name, args)
+
+        # Extract text from TextContent
+        if result and len(result) > 0:
+            text = result[0].text
+            try:
+                return JSONResponse(json.loads(text))
+            except json.JSONDecodeError:
+                return JSONResponse({"result": text})
+
+        return JSONResponse({"error": "No result"}, status_code=500)
+
+    except Exception as e:
+        logger.error(f"Error in /call: {e}", exc_info=True)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 async def health_check(request):
     """Health check endpoint"""
     tools = await list_tools()
     return JSONResponse({
         "status": "healthy",
         "server": "orca-mcp-sse",
-        "version": "2.0.0",
+        "version": "2.1.2",
         "transport": "sse",
         "claude_desktop_url": "/sse",
+        "http_call_url": "/call",
         "data_source": "Cloudflare D1 (edge) + External MCPs",
         "tool_count": len(tools),
         "tool_categories": {
@@ -1072,6 +1112,7 @@ app = Starlette(
     routes=[
         Route("/", health_check),
         Route("/health", health_check),
+        Route("/call", handle_call, methods=["POST"]),
         Route("/sse", handle_sse),
         Mount("/messages/", app=sse.handle_post_message),
     ]

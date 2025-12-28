@@ -9,10 +9,21 @@ These tools provide access to external MCP services via HTTP:
 - Sovereign Classification MCP: Issuer type classification
 - IMF MCP: IMF economic indicators (with AI analysis)
 - World Bank MCP: World Bank development indicators
+
+Authentication:
+- Self-validating tokens generated on the fly
+- Token format: {random}-{SHA256(random)[:8]}
+- No secrets, no storage - just math
 """
 
+import hashlib
+import secrets
 import requests
 import logging
+import json
+import csv
+import io
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 
 logger = logging.getLogger("orca-mcp.external")
@@ -29,6 +40,31 @@ MCP_URLS = {
 }
 
 TIMEOUT = 30  # seconds
+
+
+def _generate_token() -> str:
+    """Generate a self-validating token on the fly. No secrets needed."""
+    random_part = secrets.token_hex(8)  # 16 hex chars
+    checksum = hashlib.sha256(random_part.encode()).hexdigest()[:8]
+    return f"{random_part}-{checksum}"
+
+
+def _get_auth_headers() -> Dict[str, str]:
+    """Get headers with fresh auth token for MCP requests."""
+    return {
+        'Content-Type': 'application/json',
+        'Authorization': f'Bearer {_generate_token()}'
+    }
+
+
+def _get(url: str, params: Dict = None, timeout: int = TIMEOUT) -> requests.Response:
+    """Make authenticated GET request."""
+    return requests.get(url, params=params, headers=_get_auth_headers(), timeout=timeout)
+
+
+def _post(url: str, json_data: Dict = None, timeout: int = TIMEOUT) -> requests.Response:
+    """Make authenticated POST request."""
+    return requests.post(url, json=json_data, headers=_get_auth_headers(), timeout=timeout)
 
 
 # ============================================================================
@@ -55,7 +91,7 @@ def get_nfa_rating(country: str, year: Optional[int] = None, history: bool = Fal
         if history:
             params["history"] = "true"
 
-        response = requests.get(url, params=params, timeout=TIMEOUT)
+        response = _get(url, params=params)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -80,7 +116,7 @@ def get_nfa_batch(countries: List[str], year: Optional[int] = None) -> Dict[str,
         if year:
             payload["year"] = year
 
-        response = requests.post(url, json=payload, timeout=TIMEOUT)
+        response = _post(url, json_data=payload)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -114,7 +150,7 @@ def search_nfa_by_rating(rating: int, min_rating: Optional[int] = None,
         if year:
             params["year"] = year
 
-        response = requests.get(url, params=params, timeout=TIMEOUT)
+        response = _get(url, params=params)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -138,7 +174,7 @@ def get_credit_rating(country: str) -> Dict[str, Any]:
     """
     try:
         url = f"{MCP_URLS['rating']}/rating/{country}"
-        response = requests.get(url, timeout=TIMEOUT)
+        response = _get(url)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -158,7 +194,7 @@ def get_credit_ratings_batch(countries: List[str]) -> Dict[str, Any]:
     """
     try:
         url = f"{MCP_URLS['rating']}/ratings"
-        response = requests.post(url, json={"countries": countries}, timeout=TIMEOUT)
+        response = _post(url, json_data={"countries": countries})
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -182,7 +218,7 @@ def standardize_country(country: str) -> Dict[str, Any]:
     """
     try:
         url = f"{MCP_URLS['country_mapping']}/standardize/{country}"
-        response = requests.get(url, timeout=TIMEOUT)
+        response = _get(url)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -202,7 +238,7 @@ def get_country_info(country: str) -> Dict[str, Any]:
     """
     try:
         url = f"{MCP_URLS['country_mapping']}/country/{country}"
-        response = requests.get(url, timeout=TIMEOUT)
+        response = _get(url)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -212,7 +248,48 @@ def get_country_info(country: str) -> Dict[str, Any]:
 
 # ============================================================================
 # FRED MCP - Federal Reserve Economic Data
+# Uses POST /mcp/tools/call with tool name and arguments
 # ============================================================================
+
+def _call_fred_mcp(tool_name: str, arguments: Dict[str, Any] = None) -> Dict[str, Any]:
+    """
+    Internal helper to call FRED MCP tools.
+
+    Args:
+        tool_name: Name of the FRED tool (e.g., 'fred_series', 'fred_search')
+        arguments: Tool arguments dict
+
+    Returns:
+        Parsed response data
+    """
+    try:
+        url = f"{MCP_URLS['fred']}/mcp/tools/call"
+        payload = {
+            "name": tool_name,
+            "arguments": arguments or {}
+        }
+        response = _post(url, json_data=payload)
+        response.raise_for_status()
+
+        result = response.json()
+
+        # Check for error in response
+        if "error" in result:
+            return {"error": result["error"]}
+
+        # Parse MCP content format: {content: [{type: "text", text: "..."}]}
+        if "content" in result and result["content"]:
+            text_content = result["content"][0].get("text", "")
+            try:
+                return json.loads(text_content)
+            except json.JSONDecodeError:
+                return {"text": text_content}
+
+        return result
+    except Exception as e:
+        logger.error(f"FRED MCP error calling {tool_name}: {e}")
+        return {"error": str(e)}
+
 
 def get_fred_series(series_id: str, start_date: Optional[str] = None,
                     end_date: Optional[str] = None, analyze: bool = False) -> Dict[str, Any]:
@@ -228,22 +305,15 @@ def get_fred_series(series_id: str, start_date: Optional[str] = None,
     Returns:
         Dict with series data and optional analysis
     """
-    try:
-        url = f"{MCP_URLS['fred']}/series/{series_id}"
-        params = {}
-        if start_date:
-            params["start_date"] = start_date
-        if end_date:
-            params["end_date"] = end_date
-        if analyze:
-            params["analyze"] = "true"
+    arguments = {"series_id": series_id}
+    if start_date:
+        arguments["start_date"] = start_date
+    # Note: end_date not supported by current FRED MCP, but kept for API compatibility
 
-        response = requests.get(url, params=params, timeout=TIMEOUT)
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        logger.error(f"FRED MCP error: {e}")
-        return {"error": str(e), "series_id": series_id}
+    result = _call_fred_mcp("fred_series", arguments)
+    if "error" in result:
+        result["series_id"] = series_id
+    return result
 
 
 def search_fred_series(query: str) -> Dict[str, Any]:
@@ -256,31 +326,112 @@ def search_fred_series(query: str) -> Dict[str, Any]:
     Returns:
         List of matching series with IDs and descriptions
     """
-    try:
-        url = f"{MCP_URLS['fred']}/search"
-        params = {"q": query}
-        response = requests.get(url, params=params, timeout=TIMEOUT)
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        logger.error(f"FRED MCP search error: {e}")
-        return {"error": str(e)}
+    return _call_fred_mcp("fred_search", {"query": query})
+
+
+def get_fred_timeseries(series_id: str, start_date: str = "2019-01-01") -> Dict[str, Any]:
+    """
+    Get full FRED time series data for charting.
+
+    Args:
+        series_id: FRED series ID (e.g., 'CPIAUCSL', 'UNRATE', 'DGS10')
+        start_date: Start date (YYYY-MM-DD), default 2019-01-01
+
+    Returns:
+        Dict with chart_data array [{date, value}, ...], title, units, etc.
+    """
+    result = _call_fred_mcp("fred_series_timeseries", {
+        "series_id": series_id,
+        "start_date": start_date
+    })
+
+    # Parse the nested content if present
+    if "content" in result and result["content"]:
+        try:
+            text_content = result["content"][0].get("text", "{}")
+            parsed = json.loads(text_content)
+            return parsed
+        except (json.JSONDecodeError, KeyError, IndexError):
+            pass
+
+    return result
 
 
 def get_treasury_rates() -> Dict[str, Any]:
     """
     Get current US Treasury rates across the curve.
 
+    Fetches directly from US Treasury (primary source) - single API call for all tenors.
+
     Returns:
-        Dict with rates for 1M, 3M, 6M, 1Y, 2Y, 5Y, 10Y, 30Y
+        Dict with rates for 1M, 2M, 3M, 6M, 1Y, 2Y, 3Y, 5Y, 7Y, 10Y, 20Y, 30Y
     """
     try:
-        url = f"{MCP_URLS['fred']}/treasury/rates"
+        # Fetch from US Treasury Direct - primary source
+        year = datetime.now().year
+        url = (
+            f"https://home.treasury.gov/resource-center/data-chart-center/"
+            f"interest-rates/daily-treasury-rates.csv/{year}/all"
+            f"?type=daily_treasury_yield_curve&field_tdr_date_value={year}&page&_format=csv"
+        )
+
         response = requests.get(url, timeout=TIMEOUT)
         response.raise_for_status()
-        return response.json()
+
+        # Parse CSV
+        reader = csv.DictReader(io.StringIO(response.text))
+        rows = list(reader)
+
+        if not rows:
+            return {"error": "No treasury data available"}
+
+        # Get the most recent row (first row after header)
+        latest = rows[0]
+
+        # Map column names to standardized tenor keys
+        column_mapping = {
+            "1 Mo": "1M",
+            "2 Mo": "2M",
+            "3 Mo": "3M",
+            "4 Mo": "4M",
+            "6 Mo": "6M",
+            "1 Yr": "1Y",
+            "2 Yr": "2Y",
+            "3 Yr": "3Y",
+            "5 Yr": "5Y",
+            "7 Yr": "7Y",
+            "10 Yr": "10Y",
+            "20 Yr": "20Y",
+            "30 Yr": "30Y"
+        }
+
+        rates = {}
+        for csv_col, tenor in column_mapping.items():
+            if csv_col in latest and latest[csv_col]:
+                try:
+                    rates[tenor] = float(latest[csv_col])
+                except ValueError:
+                    pass  # Skip if not a valid number
+
+        # Parse the date (format: MM/DD/YYYY)
+        date_str = latest.get("Date", "")
+        if date_str:
+            try:
+                parsed_date = datetime.strptime(date_str, "%m/%d/%Y")
+                date_str = parsed_date.strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+
+        return {
+            "rates": rates,
+            "date": date_str,
+            "source": "US Treasury Direct",
+            "url": "https://home.treasury.gov/resource-center/data-chart-center/interest-rates",
+            "timestamp": datetime.now().isoformat()
+        }
+
     except Exception as e:
-        logger.error(f"FRED Treasury rates error: {e}")
+        logger.error(f"Treasury rates error: {e}")
         return {"error": str(e)}
 
 
@@ -300,7 +451,7 @@ def classify_issuer(isin: str) -> Dict[str, Any]:
     """
     try:
         url = f"{MCP_URLS['sovereign_classification']}/api/classify/{isin}"
-        response = requests.get(url, timeout=TIMEOUT)
+        response = _get(url)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -320,7 +471,7 @@ def classify_issuers_batch(isins: List[str]) -> Dict[str, Any]:
     """
     try:
         url = f"{MCP_URLS['sovereign_classification']}/api/classify/batch"
-        response = requests.post(url, json={"isins": isins}, timeout=TIMEOUT)
+        response = _post(url, json_data={"isins": isins})
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -341,7 +492,7 @@ def filter_by_issuer_type(issuer_type: str) -> Dict[str, Any]:
     try:
         url = f"{MCP_URLS['sovereign_classification']}/api/filter"
         params = {"type": issuer_type}
-        response = requests.get(url, params=params, timeout=TIMEOUT)
+        response = _get(url, params=params)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -361,7 +512,7 @@ def get_issuer_summary(issuer: str) -> Dict[str, Any]:
     """
     try:
         url = f"{MCP_URLS['sovereign_classification']}/api/issuer/{issuer}/summary"
-        response = requests.get(url, timeout=TIMEOUT)
+        response = _get(url)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -398,7 +549,7 @@ def get_imf_indicator(indicator: str, country: str, start_year: Optional[int] = 
         if analyze:
             params["analyze"] = "true"
 
-        response = requests.get(url, params=params, timeout=TIMEOUT)
+        response = _get(url, params=params)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -428,7 +579,7 @@ def compare_imf_countries(indicator: str, countries: List[str],
         if year:
             payload["year"] = year
 
-        response = requests.post(url, json=payload, timeout=TIMEOUT)
+        response = _post(url, json_data=payload)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -463,7 +614,7 @@ def get_worldbank_indicator(indicator: str, country: str,
         if end_year:
             params["end_year"] = end_year
 
-        response = requests.get(url, params=params, timeout=TIMEOUT)
+        response = _get(url, params=params)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -484,7 +635,7 @@ def search_worldbank_indicators(query: str) -> Dict[str, Any]:
     try:
         url = f"{MCP_URLS['worldbank']}/search"
         params = {"q": query}
-        response = requests.get(url, params=params, timeout=TIMEOUT)
+        response = _get(url, params=params)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -504,7 +655,7 @@ def get_worldbank_country_profile(country: str) -> Dict[str, Any]:
     """
     try:
         url = f"{MCP_URLS['worldbank']}/country/{country}"
-        response = requests.get(url, timeout=TIMEOUT)
+        response = _get(url)
         response.raise_for_status()
         return response.json()
     except Exception as e:
