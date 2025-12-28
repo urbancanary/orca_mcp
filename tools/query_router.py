@@ -37,12 +37,53 @@ def _get_fallback_client():
         logger.error(f"Failed to initialize FallbackLLMClient: {e}")
         return None
 
-# Router prompt that tells Haiku about available tools
+# Router prompt - enhanced with disambiguation rules and context support
+# Designed to be >2048 tokens for guaranteed Gemini caching
 ROUTER_PROMPT = """You are a tool router for the Orca financial data system.
 
-Given a user query, determine which internal tool to call and extract the required arguments.
+Given a user query and optional conversation context, determine which internal tool to call and extract the required arguments.
 
-AVAILABLE TOOLS:
+## CONVERSATION CONTEXT
+{context}
+
+## DISAMBIGUATION RULES (use these when queries are ambiguous)
+
+### Rating Queries
+- "rating" or "star rating" alone → get_nfa_rating (NFA is our primary rating system, 1-7 stars)
+- "credit rating" or "S&P/Moody's/Fitch" → get_credit_rating (traditional letter ratings)
+- "ratings for multiple countries" → get_nfa_batch or get_credit_ratings_batch
+
+### Economic Data Queries
+- Country + economic indicator → get_imf_indicator (default for international data)
+- "US" or "United States" + economic term → get_fred_series (FRED is authoritative for US)
+- "inflation" without country specified → get_fred_series with CPIAUCSL (US inflation)
+- "GDP growth" without country → get_imf_indicator (international comparison)
+- "treasury" or "yield curve" → get_treasury_rates
+
+### Portfolio Queries
+- "holdings", "portfolio", "positions", "what do I own" → get_client_holdings
+- "cash", "cash position", "available cash" → get_portfolio_cash
+- "transactions", "trades", "history" → get_client_transactions
+- "watchlist", "buy candidates", "opportunities" → get_watchlist
+- "compliance", "UCITS", "5/10/40" → get_compliance_status
+
+### Bond Queries
+- "bonds", "search bonds", "find bonds" → search_bonds_rvm
+- "bond from [country]" → search_bonds_rvm with country filter
+- "classify", "issuer type", "sovereign or corporate" → classify_issuer
+
+### Single Word Queries
+- Just a country name (e.g., "Colombia", "Brazil") → get_nfa_rating (most common use case)
+- Just "inflation" → get_fred_series with CPIAUCSL
+- Just "GDP" → get_imf_indicator with NGDP_RPCH for context country or ask clarification
+
+## CONFIDENCE SCORING
+- 0.95-1.00: Clear, unambiguous match - proceed confidently
+- 0.85-0.94: Strong match with minor ambiguity - proceed with the most likely interpretation
+- 0.70-0.84: Moderate confidence - make best guess but note uncertainty
+- Below 0.70: Too ambiguous - ask for clarification
+
+## AVAILABLE TOOLS
 
 ## Treasury & FRED (US Economic Data)
 1. get_treasury_rates() - No args. Returns full US Treasury yield curve (1M to 30Y). Use for: treasury rates, yield curve, government bonds
@@ -123,20 +164,41 @@ Respond with valid JSON only, no other text:
 If the query is ambiguous or you need more information:
 {{"tool": null, "clarification": "Please specify which country you'd like the rating for."}}
 
-EXAMPLES:
+## EXAMPLES
+
+### Clear Queries (high confidence)
 - "10Y treasury rate" -> {{"tool": "get_treasury_rates", "args": {{}}, "confidence": 0.99}}
 - "Colombia NFA rating" -> {{"tool": "get_nfa_rating", "args": {{"country": "Colombia"}}, "confidence": 0.98}}
 - "US inflation from FRED" -> {{"tool": "get_fred_series", "args": {{"series_id": "CPIAUCSL"}}, "confidence": 0.95}}
 - "Brazil GDP growth IMF" -> {{"tool": "get_imf_indicator", "args": {{"indicator": "NGDP_RPCH", "country": "Brazil"}}, "confidence": 0.95}}
 - "Compare GDP: US, China, Germany" -> {{"tool": "compare_imf_countries", "args": {{"indicator": "NGDP_RPCH", "countries": ["United States", "China", "Germany"]}}, "confidence": 0.90}}
 - "my holdings" -> {{"tool": "get_client_holdings", "args": {{}}, "confidence": 0.95}}
+- "show me the watchlist" -> {{"tool": "get_watchlist", "args": {{}}, "confidence": 0.95}}
+- "check compliance" -> {{"tool": "get_compliance_status", "args": {{}}, "confidence": 0.95}}
+
+### Disambiguation Examples (apply rules)
+- "Colombia" -> {{"tool": "get_nfa_rating", "args": {{"country": "Colombia"}}, "confidence": 0.90}}
+- "inflation" -> {{"tool": "get_fred_series", "args": {{"series_id": "CPIAUCSL"}}, "confidence": 0.88}}
+- "Mexico rating" -> {{"tool": "get_nfa_rating", "args": {{"country": "Mexico"}}, "confidence": 0.95}}
+- "Mexico credit rating" -> {{"tool": "get_credit_rating", "args": {{"country": "Mexico"}}, "confidence": 0.95}}
+- "bonds from Brazil" -> {{"tool": "search_bonds_rvm", "args": {{"country": "Brazil"}}, "confidence": 0.92}}
+- "cash position" -> {{"tool": "get_portfolio_cash", "args": {{}}, "confidence": 0.95}}
+- "unemployment rate" -> {{"tool": "get_fred_series", "args": {{"series_id": "UNRATE"}}, "confidence": 0.90}}
+
+### Queries Needing Clarification
 - "rating for" -> {{"tool": null, "clarification": "Please specify which country you'd like the rating for."}}
+- "compare" -> {{"tool": null, "clarification": "What would you like to compare? Please specify countries and an indicator (GDP, inflation, etc.)."}}
+- "data" -> {{"tool": null, "clarification": "What data are you looking for? Please be more specific."}}
+
+### Context-Aware Examples
+If context mentions "discussing Brazil": "what's the GDP growth?" -> {{"tool": "get_imf_indicator", "args": {{"indicator": "NGDP_RPCH", "country": "Brazil"}}, "confidence": 0.88}}
+If context mentions "portfolio GA10": "show holdings" -> {{"tool": "get_client_holdings", "args": {{"portfolio_id": "GA10"}}, "confidence": 0.92}}
 
 USER QUERY: {query}
 """
 
 
-async def route_query(query: str) -> Dict[str, Any]:
+async def route_query(query: str, context: str = "", model_override: str = None) -> Dict[str, Any]:
     """
     Use multi-LLM fallback to route a natural language query to the appropriate tool.
 
@@ -145,11 +207,16 @@ async def route_query(query: str) -> Dict[str, Any]:
 
     Args:
         query: Natural language query from user
+        context: Optional conversation context from memory (recent messages, current topic, etc.)
+        model_override: Optional model to use instead of fallback chain (for testing)
 
     Returns:
         Dict with 'tool', 'args', 'confidence', and 'model_used' or 'clarification' if ambiguous
     """
     result_text = ""
+
+    # Format context for prompt (or use default)
+    context_text = context if context else "No prior context available."
 
     try:
         # Get fallback client (tries cheapest models first)
@@ -165,11 +232,14 @@ async def route_query(query: str) -> Dict[str, Any]:
         # System prompt for routing
         system_prompt = "You are a tool router. Respond with valid JSON only, no other text."
 
+        # Format prompt with context and query
+        formatted_prompt = ROUTER_PROMPT.format(context=context_text, query=query)
+
         # Call with fallback across providers
         response = client.chat(
             messages=[{
                 "role": "user",
-                "content": ROUTER_PROMPT.format(query=query)
+                "content": formatted_prompt
             }],
             system=system_prompt,
             max_tokens=300
