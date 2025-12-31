@@ -34,8 +34,74 @@ def _get_fallback_client():
         client.initialize()
         return client
     except Exception as e:
-        logger.error(f"Failed to initialize FallbackLLMClient: {e}")
+        logger.warning(f"FallbackLLMClient not available: {e}")
         return None
+
+
+def _route_with_haiku(query: str, context: str = "") -> Dict[str, Any]:
+    """
+    Fallback router using Anthropic Haiku directly.
+    Used when FallbackLLMClient is not available (e.g., Railway deployment).
+    """
+    import os
+    try:
+        import anthropic
+    except ImportError:
+        logger.error("anthropic package not installed")
+        return {"tool": None, "error": "anthropic package not installed"}
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        # Try auth_mcp
+        try:
+            import urllib.request
+            auth_url = os.environ.get("AUTH_MCP_URL", "https://auth-mcp.urbancanary.workers.dev")
+            req = urllib.request.Request(
+                f"{auth_url}/api/key/ANTHROPIC_API_KEY",
+                headers={"X-Requester": "orca-mcp-router"}
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                data = json.loads(resp.read().decode())
+                api_key = data.get("key")
+        except Exception as e:
+            logger.error(f"Failed to get API key from auth_mcp: {e}")
+
+    if not api_key:
+        return {"tool": None, "error": "No Anthropic API key available"}
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+
+        context_text = context if context else "No prior context available."
+        formatted_prompt = ROUTER_PROMPT.format(context=context_text, query=query)
+
+        response = client.messages.create(
+            model="claude-3-5-haiku-latest",
+            max_tokens=300,
+            messages=[{"role": "user", "content": formatted_prompt}]
+        )
+
+        result_text = response.content[0].text.strip()
+
+        # Handle markdown code blocks
+        if result_text.startswith("```"):
+            result_text = result_text.split("```")[1]
+            if result_text.startswith("json"):
+                result_text = result_text[4:]
+            result_text = result_text.strip()
+
+        result = json.loads(result_text)
+        result["model_used"] = "anthropic/claude-3-5-haiku"
+
+        logger.info(f"Haiku router: '{query}' -> {result.get('tool')} (confidence: {result.get('confidence', 'N/A')})")
+        return result
+
+    except json.JSONDecodeError as e:
+        logger.error(f"Haiku router JSON parse error: {e}")
+        return {"tool": None, "error": f"JSON parse error: {e}"}
+    except Exception as e:
+        logger.error(f"Haiku router error: {e}")
+        return {"tool": None, "error": str(e)}
 
 # Router prompt - enhanced with disambiguation rules and context support
 # Designed to be >2048 tokens for guaranteed Gemini caching
@@ -205,6 +271,9 @@ async def route_query(query: str, context: str = "", model_override: str = None)
     Tries models in cost order (cheapest first):
       Gemini Flash -> OpenAI Mini -> Grok Mini -> Haiku
 
+    Falls back to direct Haiku call if FallbackLLMClient is not available
+    (e.g., on Railway where minerva_mcp is not installed).
+
     Args:
         query: Natural language query from user
         context: Optional conversation context from memory (recent messages, current topic, etc.)
@@ -223,11 +292,9 @@ async def route_query(query: str, context: str = "", model_override: str = None)
         client = _get_fallback_client()
 
         if not client:
-            logger.error("FallbackLLMClient not available - router cannot function")
-            return {
-                "tool": None,
-                "error": "FallbackLLMClient initialization failed"
-            }
+            # Fallback to direct Haiku call (Railway deployment)
+            logger.info("Using Haiku fallback router (FallbackLLMClient not available)")
+            return _route_with_haiku(query, context)
 
         # System prompt for routing
         system_prompt = "You are a tool router. Respond with valid JSON only, no other text."
