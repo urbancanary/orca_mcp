@@ -819,21 +819,22 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         # ============================================================================
         # PORTFOLIO CORE (internal - routed via orca_query)
+        # Default portfolio_id to 'wnbf' for natural language queries
         # ============================================================================
         elif name == "get_client_holdings":
-            portfolio_id = arguments["portfolio_id"]
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
             staging_id = arguments.get("staging_id", 1)  # Default to live
             holdings = get_holdings_from_d1(portfolio_id, staging_id)
             return [TextContent(type="text", text=json.dumps(holdings, indent=2, default=str))]
 
         elif name == "get_portfolio_summary":
-            portfolio_id = arguments["portfolio_id"]
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
             staging_id = arguments.get("staging_id", 1)
             summary = get_holdings_summary_from_d1(portfolio_id, staging_id)
             return [TextContent(type="text", text=json.dumps(summary, indent=2, default=str))]
 
         elif name == "get_client_transactions":
-            portfolio_id = arguments["portfolio_id"]
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
             limit = arguments.get("limit", 100)
             start_date = arguments.get("start_date")
             end_date = arguments.get("end_date")
@@ -1099,8 +1100,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # EXTERNAL MCP - NFA
         # ============================================================================
         elif name == "get_nfa_rating":
+            country = arguments.get("country")
+            if not country:
+                return [TextContent(type="text", text=json.dumps({"error": "country is required"}))]
             result = get_nfa_rating(
-                arguments["country"],
+                country,
                 arguments.get("year"),
                 arguments.get("history", False)
             )
