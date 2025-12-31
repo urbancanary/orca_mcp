@@ -998,9 +998,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                                     if b['rating_sp'] in rating_order]
 
                     # NFA filter - need to fetch NFA ratings
+                    # Note: get_nfa_rating is already imported at module level
                     if min_nfa_rating:
-                        from orca_mcp.tools.external_mcps import get_nfa_rating
-                        countries = list(set(b.get('country') for b in watchlist if b.get('country')))
+                        countries = list(set(b.get('country') or b.get('cbonds_country') for b in watchlist if b.get('country') or b.get('cbonds_country')))
                         country_nfa = {}
                         for c in countries:
                             try:
@@ -1010,7 +1010,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                             except:
                                 pass
                         watchlist = [b for b in watchlist
-                                    if country_nfa.get(b.get('country'), 0) >= min_nfa_rating]
+                                    if country_nfa.get(b.get('country') or b.get('cbonds_country'), 0) >= min_nfa_rating]
 
                     # Sort
                     sort_map = {'expected_return': 'return_ytw', 'yield': 'ytw', 'spread': 'oas', 'duration': 'oad'}
