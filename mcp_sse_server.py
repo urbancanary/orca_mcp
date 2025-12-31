@@ -1162,7 +1162,7 @@ async def health_check(request):
     return JSONResponse({
         "status": "healthy",
         "server": "orca-mcp-sse",
-        "version": "2.1.2",
+        "version": "2.2.0",
         "transport": "sse",
         "claude_desktop_url": "/sse",
         "http_call_url": "/call",
@@ -1171,7 +1171,7 @@ async def health_check(request):
         "tool_categories": {
             "portfolio": ["get_client_holdings", "get_portfolio_summary", "get_client_transactions", "get_portfolio_cash"],
             "compliance": ["get_compliance_status", "check_trade_compliance_impact"],
-            "analytics": ["search_bonds_rvm", "suggest_rebalancing"],
+            "analytics": ["search_bonds_rvm", "suggest_rebalancing", "get_watchlist"],
             "imf": ["fetch_imf_data", "get_available_indicators", "get_available_country_groups"],
             "etf": ["get_etf_allocation", "list_etf_allocations", "get_etf_country_exposure"],
             "video": ["video_search", "video_list", "video_synthesize", "video_get_transcript", "video_keyword_search"],
