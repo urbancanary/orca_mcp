@@ -5,6 +5,11 @@ Orca MCP - SSE Server for Claude Desktop Remote Connection
 This server provides MCP (Model Context Protocol) access via SSE transport,
 allowing Claude Desktop to connect remotely using the "Add custom connector" feature.
 
+ARCHITECTURE (v3.0):
+    Claude Desktop sees only ONE tool: orca_query
+    Internally, we route to 37+ tools using FallbackLLMClient (Gemini/Haiku)
+    Tools are enabled gradually via ENABLED_TOOLS registry
+
 Usage:
     # Run standalone
     python mcp_sse_server.py
@@ -25,6 +30,24 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 from typing import Any
+
+# =============================================================================
+# ENABLED TOOLS REGISTRY
+# Add tools here one at a time as we validate them via orca_query routing
+# =============================================================================
+ENABLED_TOOLS = {
+    # Phase 1: Core portfolio tools
+    "get_watchlist",           # Bond watchlist with filters
+    "get_client_holdings",     # Portfolio holdings
+    "get_portfolio_summary",   # Portfolio stats
+    "get_compliance_status",   # UCITS compliance
+
+    # Phase 2: Rating/country tools
+    "get_nfa_rating",          # NFA star ratings
+    "get_credit_rating",       # S&P/Moody's ratings
+
+    # Add more tools here as we validate them...
+}
 
 # Add current directory to path for imports
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -173,14 +196,50 @@ except ImportError:
     )
     from orca_mcp.client_config import get_client_config
 
+# Import query router for natural language interface
+try:
+    from tools.query_router import route_query, ORCA_QUERY_TOOL_DESCRIPTION
+except ImportError:
+    from orca_mcp.tools.query_router import route_query, ORCA_QUERY_TOOL_DESCRIPTION
+
 # Create MCP server instance
 mcp_server = Server("orca-mcp")
 
 
 @mcp_server.list_tools()
 async def list_tools() -> list[Tool]:
-    """List available Orca MCP tools - now with 51 tools!"""
+    """
+    List available Orca MCP tools.
+
+    v3.0: Only exposes orca_query - all other tools are routed internally.
+    This reduces Claude's context from ~11K tokens to ~500 tokens.
+    """
     return [
+        Tool(
+            name="orca_query",
+            description=ORCA_QUERY_TOOL_DESCRIPTION,
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language query describing what data you need"
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "Optional conversation context for better routing"
+                    }
+                },
+                "required": ["query"]
+            }
+        ),
+    ]
+
+
+# =============================================================================
+# INTERNAL TOOL DEFINITIONS (hidden from Claude, used by router)
+# =============================================================================
+INTERNAL_TOOLS = [
         # ============================================================================
         # PORTFOLIO CORE TOOLS
         # ============================================================================
@@ -684,14 +743,84 @@ async def list_tools() -> list[Tool]:
 
 @mcp_server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
-    """Handle tool calls"""
+    """Handle tool calls - routes through orca_query or directly to internal tools."""
     try:
         client_id = arguments.get("client_id", "guinness")
 
         # ============================================================================
-        # PORTFOLIO CORE
+        # ORCA_QUERY - Natural language router (the only tool Claude sees)
         # ============================================================================
-        if name == "get_client_holdings":
+        if name == "orca_query":
+            query = arguments.get("query", "")
+            context = arguments.get("context", "")
+
+            if not query:
+                return [TextContent(type="text", text=json.dumps({
+                    "error": "No query provided",
+                    "hint": "Please describe what data you need in natural language"
+                }))]
+
+            # Route the query using FallbackLLMClient
+            routing_result = await route_query(query, context)
+
+            # Check if clarification needed
+            if routing_result.get("clarification"):
+                return [TextContent(type="text", text=json.dumps({
+                    "clarification_needed": routing_result["clarification"],
+                    "query": query
+                }))]
+
+            # Check if routing failed
+            if routing_result.get("error"):
+                return [TextContent(type="text", text=json.dumps({
+                    "error": routing_result["error"],
+                    "query": query
+                }))]
+
+            # Get the routed tool and args
+            routed_tool = routing_result.get("tool")
+            routed_args = routing_result.get("args", {})
+            confidence = routing_result.get("confidence", 0)
+            model_used = routing_result.get("model_used", "unknown")
+
+            # Check if tool is enabled
+            if routed_tool not in ENABLED_TOOLS:
+                return [TextContent(type="text", text=json.dumps({
+                    "error": f"Tool '{routed_tool}' is not yet enabled",
+                    "enabled_tools": list(ENABLED_TOOLS),
+                    "hint": "This capability is coming soon. Try a different query.",
+                    "routing": {"tool": routed_tool, "confidence": confidence, "model": model_used}
+                }))]
+
+            # Log the routing decision
+            logger.info(f"orca_query: '{query}' -> {routed_tool} (confidence: {confidence}, model: {model_used})")
+
+            # Call the internal tool recursively
+            result = await call_tool(routed_tool, routed_args)
+
+            # Wrap result with routing metadata
+            if result and len(result) > 0:
+                try:
+                    inner_result = json.loads(result[0].text)
+                    wrapped = {
+                        "data": inner_result,
+                        "routing": {
+                            "tool": routed_tool,
+                            "args": routed_args,
+                            "confidence": confidence,
+                            "model": model_used
+                        }
+                    }
+                    return [TextContent(type="text", text=json.dumps(wrapped, indent=2, default=str))]
+                except json.JSONDecodeError:
+                    return result  # Return as-is if not JSON
+
+            return result
+
+        # ============================================================================
+        # PORTFOLIO CORE (internal - routed via orca_query)
+        # ============================================================================
+        elif name == "get_client_holdings":
             portfolio_id = arguments["portfolio_id"]
             staging_id = arguments.get("staging_id", 1)  # Default to live
             holdings = get_holdings_from_d1(portfolio_id, staging_id)
@@ -1158,31 +1287,22 @@ async def handle_call(request):
 
 async def health_check(request):
     """Health check endpoint"""
-    tools = await list_tools()
     return JSONResponse({
         "status": "healthy",
         "server": "orca-mcp-sse",
-        "version": "2.2.0",
+        "version": "3.0.0",
+        "architecture": "Single orca_query router with internal tool routing",
         "transport": "sse",
         "claude_desktop_url": "/sse",
         "http_call_url": "/call",
         "data_source": "Cloudflare D1 (edge) + External MCPs",
-        "tool_count": len(tools),
-        "tool_categories": {
-            "portfolio": ["get_client_holdings", "get_portfolio_summary", "get_client_transactions", "get_portfolio_cash"],
-            "compliance": ["get_compliance_status", "check_trade_compliance_impact"],
-            "analytics": ["search_bonds_rvm", "suggest_rebalancing", "get_watchlist"],
-            "imf": ["fetch_imf_data", "get_available_indicators", "get_available_country_groups"],
-            "etf": ["get_etf_allocation", "list_etf_allocations", "get_etf_country_exposure"],
-            "video": ["video_search", "video_list", "video_synthesize", "video_get_transcript", "video_keyword_search"],
-            "nfa": ["get_nfa_rating", "get_nfa_batch", "search_nfa_by_rating"],
-            "ratings": ["get_credit_rating", "get_credit_ratings_batch"],
-            "country": ["standardize_country", "get_country_info"],
-            "fred": ["get_fred_series", "search_fred_series", "get_treasury_rates"],
-            "sovereign": ["classify_issuer", "classify_issuers_batch", "filter_by_issuer_type", "get_issuer_summary"],
-            "imf_external": ["get_imf_indicator_external", "compare_imf_countries"],
-            "worldbank": ["get_worldbank_indicator", "search_worldbank_indicators", "get_worldbank_country_profile"]
-        }
+        "exposed_tools": 1,
+        "exposed_tool": "orca_query",
+        "internal_tools": len(INTERNAL_TOOLS),
+        "enabled_tools": list(ENABLED_TOOLS),
+        "enabled_count": len(ENABLED_TOOLS),
+        "routing": "FallbackLLMClient (Gemini Flash -> OpenAI Mini -> Haiku)",
+        "token_savings": "~11K -> ~500 tokens (95% reduction)"
     })
 
 
@@ -1202,6 +1322,8 @@ app = Starlette(
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
-    logger.info(f"Starting Orca MCP SSE Server v2.0 on port {port}")
+    logger.info(f"Starting Orca MCP SSE Server v3.0 on port {port}")
+    logger.info(f"Architecture: Single orca_query tool with internal routing")
+    logger.info(f"Enabled tools: {list(ENABLED_TOOLS)}")
     logger.info(f"Claude Desktop URL: http://localhost:{port}/sse")
     uvicorn.run(app, host="0.0.0.0", port=port)
