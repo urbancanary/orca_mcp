@@ -52,17 +52,30 @@ def _route_with_haiku(query: str, context: str = "") -> Dict[str, Any]:
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        # Try auth_mcp
+        # Try auth_mcp with self-validating token
         try:
             import urllib.request
+            import hashlib
+            import secrets as sec
+
+            # Generate self-validating token (format: {random}-{sha256_checksum})
+            random_part = sec.token_hex(8)
+            checksum = hashlib.sha256(random_part.encode()).hexdigest()[:8]
+            auth_token = f"{random_part}-{checksum}"
+
             auth_url = os.environ.get("AUTH_MCP_URL", "https://auth-mcp.urbancanary.workers.dev")
             req = urllib.request.Request(
                 f"{auth_url}/api/key/ANTHROPIC_API_KEY",
-                headers={"X-Requester": "orca-mcp-router"}
+                headers={
+                    "Authorization": f"Bearer {auth_token}",
+                    "X-Requester": "orca-mcp-router"
+                }
             )
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read().decode())
-                api_key = data.get("key")
+                api_key = data.get("value")  # Note: 'value' not 'key'
+                if api_key:
+                    logger.info("Got ANTHROPIC_API_KEY from auth_mcp")
         except Exception as e:
             logger.error(f"Failed to get API key from auth_mcp: {e}")
 
