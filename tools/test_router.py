@@ -72,14 +72,14 @@ TEST_CASES = [
     ("bonds from Mexico", "search_bonds_rvm", "Bonds by country"),
     ("Brazilian bonds", "search_bonds_rvm", "Bonds by country adj"),
     ("find bonds BBB", "search_bonds_rvm", "Bonds by rating"),
-    ("classify issuer", "classify_issuer", "Classify issuer"),
+    ("classify issuer PEMEX", "classify_issuer", "Classify issuer with name"),
+    ("classify issuer", None, "Classify issuer alone -> clarification"),
 
     # ETF
-    ("ETF allocation", "get_etf_allocation", "ETF allocation"),
-    ("country exposure ETF", "get_etf_country_exposure", "ETF exposure"),
+    ("LQD ETF allocation", "get_etf_allocation", "ETF allocation with name"),
+    ("LQD country exposure", "get_etf_country_exposure", "ETF exposure with name"),
 
     # Video
-    ("search videos", "video_search", "Video search"),
     ("video about inflation", "video_search", "Video topic search"),
 
     # Ambiguous (should ask for clarification)

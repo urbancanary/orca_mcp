@@ -591,6 +591,31 @@ def compare_imf_countries(indicator: str, countries: List[str],
 # World Bank MCP - Development Indicators
 # ============================================================================
 
+def _country_to_iso3(country: str, api: str = "worldbank") -> str:
+    """Convert country name to ISO-3 code using country-mapping-mcp."""
+    try:
+        url = f"{MCP_URLS['country_mapping']}/map/{country}"
+        response = _get(url, params={"api": api})
+        if response.status_code == 200:
+            return response.json().get("code", country.upper()[:3])
+    except Exception as e:
+        logger.warning(f"Country mapping failed for {country}: {e}")
+    return country.upper()[:3]  # Fallback
+
+
+def _call_worldbank_mcp(tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    """Call World Bank MCP via proper MCP protocol."""
+    try:
+        url = f"{MCP_URLS['worldbank']}/mcp/tools/call"
+        payload = {"name": tool_name, "arguments": arguments}
+        response = requests.post(url, json=payload, timeout=30)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"World Bank MCP error: {e}")
+        return {"error": str(e)}
+
+
 def get_worldbank_indicator(indicator: str, country: str,
                             start_year: Optional[int] = None,
                             end_year: Optional[int] = None) -> Dict[str, Any]:
@@ -606,20 +631,19 @@ def get_worldbank_indicator(indicator: str, country: str,
     Returns:
         Dict with indicator data
     """
-    try:
-        url = f"{MCP_URLS['worldbank']}/indicator/{indicator}"
-        params = {"country": country}
-        if start_year:
-            params["start_year"] = start_year
-        if end_year:
-            params["end_year"] = end_year
+    # Convert country name to ISO-3 code
+    iso_code = _country_to_iso3(country, api="worldbank")
 
-        response = _get(url, params=params)
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        logger.error(f"World Bank MCP error: {e}")
-        return {"error": str(e)}
+    args = {
+        "indicator_id": indicator,
+        "countries": [iso_code]
+    }
+    if start_year:
+        args["start_year"] = str(start_year)
+    if end_year:
+        args["end_year"] = str(end_year)
+
+    return _call_worldbank_mcp("wb_indicator_data", args)
 
 
 def search_worldbank_indicators(query: str) -> Dict[str, Any]:
@@ -632,15 +656,7 @@ def search_worldbank_indicators(query: str) -> Dict[str, Any]:
     Returns:
         List of matching indicators with codes and descriptions
     """
-    try:
-        url = f"{MCP_URLS['worldbank']}/search"
-        params = {"q": query}
-        response = _get(url, params=params)
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        logger.error(f"World Bank search error: {e}")
-        return {"error": str(e)}
+    return _call_worldbank_mcp("wb_list_indicators", {"search": query})
 
 
 def get_worldbank_country_profile(country: str) -> Dict[str, Any]:
@@ -653,11 +669,24 @@ def get_worldbank_country_profile(country: str) -> Dict[str, Any]:
     Returns:
         Dict with key development indicators for the country
     """
-    try:
-        url = f"{MCP_URLS['worldbank']}/country/{country}"
-        response = _get(url)
-        response.raise_for_status()
-        return response.json()
-    except Exception as e:
-        logger.error(f"World Bank country profile error: {e}")
-        return {"error": str(e), "country": country}
+    # Convert country name to ISO-3 code
+    iso_code = _country_to_iso3(country, api="worldbank")
+
+    # Get key indicators for a country profile
+    key_indicators = [
+        "NY.GDP.PCAP.CD",  # GDP per capita
+        "SP.POP.TOTL",     # Population
+        "SI.POV.DDAY",     # Poverty headcount
+        "SP.DYN.LE00.IN",  # Life expectancy
+    ]
+
+    results = {"country": country, "iso_code": iso_code, "indicators": {}}
+    for ind in key_indicators:
+        data = _call_worldbank_mcp("wb_indicator_data", {
+            "indicator_id": ind,
+            "countries": [iso_code]
+        })
+        if "error" not in data:
+            results["indicators"][ind] = data
+
+    return results

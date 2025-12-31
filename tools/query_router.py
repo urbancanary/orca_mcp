@@ -4,8 +4,10 @@ Orca Query Router - Multi-LLM routing for natural language queries to tools.
 This module provides intelligent routing from a single orca_query() entry point
 to the appropriate internal tool, reducing token usage by ~95%.
 
-Uses FallbackLLMClient with purpose="routing" to try cheapest models first:
+Uses FallbackLLMClient from auth_mcp with purpose="routing" to try cheapest models first:
   Gemini Flash -> OpenAI Mini -> Grok Mini -> Haiku
+
+The model order is configured in auth_mcp/worker.js under PURPOSES.routing.
 """
 
 import json
@@ -25,96 +27,46 @@ def _get_fallback_client():
     """
     Get FallbackLLMClient configured for routing (cheapest models first).
 
+    The model order is controlled by auth_mcp/worker.js PURPOSES.routing:
+      Gemini Flash ($0.075/1M) -> OpenAI Mini ($0.15/1M) -> Grok Mini ($0.20/1M) -> Haiku ($0.25/1M)
+
+    Tries to import from:
+      1. auth_mcp (if available - local development)
+      2. Local copy in tools/ (Railway deployment)
+
     Returns:
         FallbackLLMClient instance or None if import fails
     """
+    # Try auth_mcp first (local development)
     try:
-        from minerva_mcp.src.fallback_client import FallbackLLMClient
-        client = FallbackLLMClient(purpose="routing")
+        from auth_mcp import FallbackLLMClient
+        logger.debug("Using FallbackLLMClient from auth_mcp")
+        client = FallbackLLMClient(purpose="routing", requester="orca-mcp-router")
+        client.initialize()
+        return client
+    except ImportError:
+        pass
+
+    # Fall back to local copy (Railway deployment)
+    try:
+        from orca_mcp.tools.fallback_client import FallbackLLMClient
+        logger.debug("Using FallbackLLMClient from local tools/")
+        client = FallbackLLMClient(purpose="routing", requester="orca-mcp-router")
+        client.initialize()
+        return client
+    except ImportError:
+        pass
+
+    # Last resort - try relative import
+    try:
+        from .fallback_client import FallbackLLMClient
+        logger.debug("Using FallbackLLMClient from relative import")
+        client = FallbackLLMClient(purpose="routing", requester="orca-mcp-router")
         client.initialize()
         return client
     except Exception as e:
-        logger.warning(f"FallbackLLMClient not available: {e}")
+        logger.error(f"FallbackLLMClient import failed: {e}")
         return None
-
-
-def _route_with_haiku(query: str, context: str = "") -> Dict[str, Any]:
-    """
-    Fallback router using Anthropic Haiku directly.
-    Used when FallbackLLMClient is not available (e.g., Railway deployment).
-    """
-    import os
-    try:
-        import anthropic
-    except ImportError:
-        logger.error("anthropic package not installed")
-        return {"tool": None, "error": "anthropic package not installed"}
-
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        # Try auth_mcp with self-validating token
-        try:
-            import urllib.request
-            import hashlib
-            import secrets as sec
-
-            # Generate self-validating token (format: {random}-{sha256_checksum})
-            random_part = sec.token_hex(8)
-            checksum = hashlib.sha256(random_part.encode()).hexdigest()[:8]
-            auth_token = f"{random_part}-{checksum}"
-
-            auth_url = os.environ.get("AUTH_MCP_URL", "https://auth-mcp.urbancanary.workers.dev")
-            req = urllib.request.Request(
-                f"{auth_url}/api/key/ANTHROPIC_API_KEY",
-                headers={
-                    "Authorization": f"Bearer {auth_token}",
-                    "X-Requester": "orca-mcp-router"
-                }
-            )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = json.loads(resp.read().decode())
-                api_key = data.get("value")  # Note: 'value' not 'key'
-                if api_key:
-                    logger.info("Got ANTHROPIC_API_KEY from auth_mcp")
-        except Exception as e:
-            logger.error(f"Failed to get API key from auth_mcp: {e}")
-
-    if not api_key:
-        return {"tool": None, "error": "No Anthropic API key available"}
-
-    try:
-        client = anthropic.Anthropic(api_key=api_key)
-
-        context_text = context if context else "No prior context available."
-        formatted_prompt = ROUTER_PROMPT.format(context=context_text, query=query)
-
-        response = client.messages.create(
-            model="claude-3-5-haiku-latest",
-            max_tokens=300,
-            messages=[{"role": "user", "content": formatted_prompt}]
-        )
-
-        result_text = response.content[0].text.strip()
-
-        # Handle markdown code blocks
-        if result_text.startswith("```"):
-            result_text = result_text.split("```")[1]
-            if result_text.startswith("json"):
-                result_text = result_text[4:]
-            result_text = result_text.strip()
-
-        result = json.loads(result_text)
-        result["model_used"] = "anthropic/claude-3-5-haiku"
-
-        logger.info(f"Haiku router: '{query}' -> {result.get('tool')} (confidence: {result.get('confidence', 'N/A')})")
-        return result
-
-    except json.JSONDecodeError as e:
-        logger.error(f"Haiku router JSON parse error: {e}")
-        return {"tool": None, "error": f"JSON parse error: {e}"}
-    except Exception as e:
-        logger.error(f"Haiku router error: {e}")
-        return {"tool": None, "error": str(e)}
 
 # Router prompt - enhanced with disambiguation rules and context support
 # Designed to be >2048 tokens for guaranteed Gemini caching
@@ -281,11 +233,11 @@ async def route_query(query: str, context: str = "", model_override: str = None)
     """
     Use multi-LLM fallback to route a natural language query to the appropriate tool.
 
-    Tries models in cost order (cheapest first):
+    Tries models in cost order (cheapest first) via auth_mcp's FallbackLLMClient:
       Gemini Flash -> OpenAI Mini -> Grok Mini -> Haiku
 
-    Falls back to direct Haiku call if FallbackLLMClient is not available
-    (e.g., on Railway where minerva_mcp is not installed).
+    The model order is configured in auth_mcp/worker.js PURPOSES.routing.
+    If all providers fail (e.g., out of credit), returns error for graceful handling.
 
     Args:
         query: Natural language query from user
@@ -305,9 +257,13 @@ async def route_query(query: str, context: str = "", model_override: str = None)
         client = _get_fallback_client()
 
         if not client:
-            # Fallback to direct Haiku call (Railway deployment)
-            logger.info("Using Haiku fallback router (FallbackLLMClient not available)")
-            return _route_with_haiku(query, context)
+            # FallbackLLMClient not available - return error instead of breaking
+            logger.error("FallbackLLMClient not available - check auth_mcp import")
+            return {
+                "tool": None,
+                "error": "Routing service unavailable. FallbackLLMClient import failed.",
+                "suggestion": "Check auth_mcp is properly installed and accessible."
+            }
 
         # System prompt for routing
         system_prompt = "You are a tool router. Respond with valid JSON only, no other text."

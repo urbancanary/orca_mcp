@@ -49,7 +49,7 @@ orca_query("show me the watchlist")
      │
      ▼
 FallbackLLMClient (purpose="routing")
-Tries: Gemini Flash → OpenAI Mini → Haiku
+Tries: Gemini Flash → OpenAI Mini → Grok Mini → Haiku
      │
      ▼
 {"tool": "get_watchlist", "args": {}, "confidence": 0.95}
@@ -58,11 +58,18 @@ Tries: Gemini Flash → OpenAI Mini → Haiku
 call_tool("get_watchlist", {})  ← Same handler Athena uses!
 ```
 
+**FallbackLLMClient** (from `auth_mcp`) provides resilient routing:
+- Model order configured in `auth_mcp/worker.js` under `PURPOSES.routing`
+- Costs: Gemini Flash ($0.075/1M) → OpenAI Mini ($0.15/1M) → Grok Mini ($0.20/1M) → Haiku ($0.25/1M)
+- Automatic fallback if any provider fails (rate limits, out of credit, etc.)
+- API keys fetched from auth_mcp HTTP API at runtime
+
 **Benefits:**
 - Reduces Claude context from ~11K tokens to ~500 tokens (95% reduction)
 - Prevents Claude from picking wrong tools
 - Allows gradual rollout of tools via ENABLED_TOOLS registry
 - Programmatic access remains fast and direct
+- Resilient to individual provider failures
 
 ---
 
@@ -100,8 +107,16 @@ To enable a new tool:
 |------|---------|
 | `mcp_sse_server.py` | SSE server for Railway (v3.0 - single orca_query tool) |
 | `server.py` | Local stdio server (has full tool set) |
-| `tools/query_router.py` | FallbackLLMClient routing logic |
+| `tools/query_router.py` | Query routing logic (uses FallbackLLMClient) |
+| `tools/fallback_client.py` | Multi-provider LLM client (copy from auth_mcp for Railway) |
 | `tools/external_mcps.py` | Wrappers for NFA, ratings, FRED, etc. |
+
+### FallbackLLMClient Source
+
+The authoritative source for `FallbackLLMClient` is `auth_mcp/fallback_client.py`.
+The copy in `tools/fallback_client.py` is for Railway deployment where auth_mcp isn't available as a Python import.
+
+To update: Copy from `auth_mcp/fallback_client.py` → `tools/fallback_client.py`
 
 ---
 
