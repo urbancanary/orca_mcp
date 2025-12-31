@@ -299,6 +299,21 @@ async def list_tools() -> list[Tool]:
                 "required": []
             }
         ),
+        Tool(
+            name="get_watchlist",
+            description="Get the bond watchlist - candidate bonds for purchase. Returns ISINs with full analytics (YTW, OAD, OAS, expected return, ratings, country). Use this to find undervalued bonds NOT already in the portfolio.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "full_details": {"type": "boolean", "description": "Include full analytics (default: true)"},
+                    "min_rating": {"type": "string", "description": "Minimum S&P rating (e.g., 'BBB-')"},
+                    "min_nfa_rating": {"type": "integer", "description": "Minimum NFA star rating (1-7, 3+ recommended)"},
+                    "sort_by": {"type": "string", "enum": ["expected_return", "yield", "spread", "duration"], "description": "Sort by field (default: expected_return)"},
+                    "limit": {"type": "integer", "description": "Max results"}
+                },
+                "required": []
+            }
+        ),
 
         # ============================================================================
         # IMF GATEWAY
@@ -822,6 +837,71 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "buy_candidates": []
             }
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "get_watchlist":
+            # Fetch watchlist from D1 via ga10-pricing API
+            import os
+            import urllib.request
+            pricing_url = os.getenv('GA10_PRICING_URL', 'https://ga10-pricing.urbancanary.workers.dev')
+            url = f"{pricing_url}/prices/latest"
+
+            try:
+                req = urllib.request.Request(url)
+                with urllib.request.urlopen(req, timeout=15) as response:
+                    data = json.loads(response.read().decode())
+                    watchlist = data.get('prices', [])
+
+                    # Apply filters if provided
+                    min_rating = arguments.get("min_rating")
+                    min_nfa_rating = arguments.get("min_nfa_rating")
+                    sort_by = arguments.get("sort_by", "expected_return")
+                    limit = arguments.get("limit")
+
+                    # Rating filter
+                    if min_rating:
+                        rating_order = ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-',
+                                       'BBB+', 'BBB', 'BBB-', 'BB+', 'BB', 'BB-',
+                                       'B+', 'B', 'B-', 'CCC+', 'CCC', 'CCC-', 'CC', 'C', 'D']
+                        min_idx = rating_order.index(min_rating.upper()) if min_rating.upper() in rating_order else 99
+                        watchlist = [b for b in watchlist
+                                    if b.get('rating_sp') and
+                                    rating_order.index(b['rating_sp']) <= min_idx
+                                    if b['rating_sp'] in rating_order]
+
+                    # NFA filter - need to fetch NFA ratings
+                    if min_nfa_rating:
+                        from orca_mcp.tools.external_mcps import get_nfa_rating
+                        countries = list(set(b.get('country') for b in watchlist if b.get('country')))
+                        country_nfa = {}
+                        for c in countries:
+                            try:
+                                nfa = get_nfa_rating(c)
+                                if 'nfa_star_rating' in nfa:
+                                    country_nfa[c] = nfa['nfa_star_rating']
+                            except:
+                                pass
+                        watchlist = [b for b in watchlist
+                                    if country_nfa.get(b.get('country'), 0) >= min_nfa_rating]
+
+                    # Sort
+                    sort_map = {'expected_return': 'return_ytw', 'yield': 'ytw', 'spread': 'oas', 'duration': 'oad'}
+                    sort_key = sort_map.get(sort_by, 'return_ytw')
+                    watchlist = sorted(watchlist, key=lambda x: float(x.get(sort_key, 0) or 0), reverse=True)
+
+                    # Limit
+                    if limit:
+                        watchlist = watchlist[:limit]
+
+                    result = {
+                        "watchlist": watchlist,
+                        "count": len(watchlist),
+                        "filters": {"min_rating": min_rating, "min_nfa_rating": min_nfa_rating, "sort_by": sort_by}
+                    }
+            except Exception as e:
+                logger.error(f"Failed to fetch watchlist: {e}")
+                result = {"watchlist": [], "count": 0, "error": str(e)}
+
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         # ============================================================================
         # IMF GATEWAY
