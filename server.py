@@ -118,11 +118,65 @@ logger = logging.getLogger("orca-mcp")
 # Create server instance
 server = Server("orca-mcp")
 
+# Tools hidden from Claude but still available via orca_query router
+# These tools are routed internally - Claude only sees orca_query
+HIDDEN_TOOLS = {
+    # NFA/Credit Rating tools
+    "get_nfa_rating",
+    "get_nfa_batch",
+    "get_credit_rating",
+    "get_credit_ratings_batch",
+    # IMF tools
+    "fetch_imf_data",
+    "get_imf_indicator_external",
+    "compare_imf_countries",
+    # World Bank tools
+    "get_worldbank_indicator",
+    "search_worldbank_indicators",
+    "get_worldbank_country_profile",
+    # FRED tools
+    "get_fred_series",
+    "search_fred_series",
+    "get_treasury_rates",
+    # Video tools
+    "video_search",
+    "video_list",
+    "video_synthesize",
+    "video_get_transcript",
+    "video_keyword_search",
+    # Portfolio/Bond tools
+    "get_client_holdings",
+    "get_client_transactions",
+    "get_watchlist",
+    "search_bonds_rvm",
+    "classify_issuer",
+    "classify_issuers_batch",
+    "filter_by_issuer_type",
+    "get_issuer_summary",
+    # Compliance tools
+    "get_compliance_status",
+    "check_trade_compliance_impact",
+    "suggest_rebalancing",
+}
+
+# Tools only visible to specific clients (specialist projects, would confuse others)
+# Format: tool_name -> set of client_ids who can see it
+CLIENT_ONLY_TOOLS = {
+    # ETF tools - Guinness specialist project
+    "get_etf_allocation": {"guinness"},
+    "list_etf_allocations": {"guinness"},
+    "get_etf_country_exposure": {"guinness"},
+}
+
+def _get_current_client_id() -> str:
+    """Get current client ID from environment."""
+    return os.environ.get("ORCA_CLIENT_ID", "guinness")
+
 
 @server.list_tools()
 async def list_tools() -> list[Tool]:
-    """List available Orca MCP tools"""
-    return [
+    """List available Orca MCP tools (filters out hidden and client-restricted tools)"""
+    all_tools = [
         # ========== ROUTER TOOL (Primary Entry Point) ==========
         Tool(
             name="orca_query",
@@ -778,7 +832,11 @@ async def list_tools() -> list[Tool]:
                     },
                     "min_rating": {
                         "type": "string",
-                        "description": "Minimum rating (e.g., 'BBB-', 'A', 'AA')"
+                        "description": "Minimum S&P credit rating (e.g., 'BBB-', 'A', 'AA'). Filters out junk bonds."
+                    },
+                    "min_nfa_rating": {
+                        "type": "integer",
+                        "description": "Minimum NFA star rating (1-7). 3+ recommended for investment grade countries."
                     },
                     "sort_by": {
                         "type": "string",
@@ -1213,6 +1271,20 @@ async def list_tools() -> list[Tool]:
             }
         )
     ]
+
+    # Filter out hidden tools and client-restricted tools
+    client_id = _get_current_client_id()
+
+    def is_tool_visible(tool_name: str) -> bool:
+        # Hidden tools are never visible (routed via orca_query)
+        if tool_name in HIDDEN_TOOLS:
+            return False
+        # Client-only tools visible only to specified clients
+        if tool_name in CLIENT_ONLY_TOOLS:
+            return client_id in CLIENT_ONLY_TOOLS[tool_name]
+        return True
+
+    return [tool for tool in all_tools if is_tool_visible(tool.name)]
 
 
 @server.call_tool()
@@ -2446,6 +2518,7 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             min_expected_return = arguments.get("min_expected_return")
             max_duration = arguments.get("max_duration")
             min_rating = arguments.get("min_rating")
+            min_nfa_rating = arguments.get("min_nfa_rating")
             sort_by = arguments.get("sort_by", "expected_return")
             limit = arguments.get("limit", 10)
             exclude_portfolio = arguments.get("exclude_portfolio", True)
@@ -2479,7 +2552,9 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             conditions = []
 
             if country:
-                conditions.append(f"LOWER(a.country) = LOWER('{country}')")
+                # Use CAST to handle both STRING and INT64 country columns
+                # Also handle case-insensitive matching
+                conditions.append(f"LOWER(CAST(a.country AS STRING)) = LOWER('{country}')")
 
             if ticker_pattern:
                 conditions.append(f"UPPER(a.ticker) LIKE UPPER('%{ticker_pattern}%')")
@@ -2497,6 +2572,29 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
 
             if max_duration is not None:
                 conditions.append(f"a.oad <= {max_duration}")
+
+            if min_rating:
+                # Convert letter rating to numeric for comparison
+                # Standard S&P scale: AAA=21, AA+=20, AA=19, ... BBB-=12, BB+=11, etc.
+                rating_scale = {
+                    'AAA': 21, 'AA+': 20, 'AA': 19, 'AA-': 18,
+                    'A+': 17, 'A': 16, 'A-': 15,
+                    'BBB+': 14, 'BBB': 13, 'BBB-': 12,
+                    'BB+': 11, 'BB': 10, 'BB-': 9,
+                    'B+': 8, 'B': 7, 'B-': 6,
+                    'CCC+': 5, 'CCC': 4, 'CCC-': 3,
+                    'CC': 2, 'C': 1, 'D': 0
+                }
+                min_rating_upper = min_rating.upper()
+                if min_rating_upper in rating_scale:
+                    min_numeric = rating_scale[min_rating_upper]
+                    # Build rating comparison - check both S&P and Moody's, take best
+                    rating_conditions = []
+                    for r, n in rating_scale.items():
+                        if n >= min_numeric:
+                            rating_conditions.append(f"UPPER(a.rating_sp) = '{r}'")
+                    if rating_conditions:
+                        conditions.append(f"({' OR '.join(rating_conditions)})")
 
             # Build exclusion subquery if needed
             exclusion_sql = ""
@@ -2558,6 +2656,39 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                     }, indent=2)
                 )]
 
+            # Post-filter by NFA rating if requested
+            nfa_filter_applied = False
+            if min_nfa_rating and not df.empty:
+                # Get unique countries from results
+                unique_countries = df['country'].dropna().unique().tolist()
+                if unique_countries:
+                    # Fetch NFA ratings for these countries
+                    country_nfa = {}
+                    for c in unique_countries:
+                        try:
+                            nfa_result = get_nfa_rating(str(c))
+                            if 'nfa_star_rating' in nfa_result:
+                                country_nfa[c] = nfa_result['nfa_star_rating']
+                        except Exception as e:
+                            logger.warning(f"Could not get NFA for {c}: {e}")
+
+                    # Filter dataframe to only include countries meeting NFA threshold
+                    if country_nfa:
+                        df = df[df['country'].apply(
+                            lambda x: country_nfa.get(x, 0) >= min_nfa_rating
+                        )]
+                        nfa_filter_applied = True
+
+            if df.empty:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "bonds": [],
+                        "count": 0,
+                        "message": f"No bonds found meeting NFA rating >= {min_nfa_rating} stars. Try lowering the threshold."
+                    }, indent=2)
+                )]
+
             # Format results
             bonds = []
             for _, row in df.iterrows():
@@ -2587,10 +2718,12 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                     'issuer_type': issuer_type,
                     'min_expected_return': min_expected_return,
                     'max_duration': max_duration,
+                    'min_rating': min_rating,
+                    'min_nfa_rating': min_nfa_rating,
                     'exclude_portfolio': exclude_portfolio,
                     'sort_by': sort_by
                 },
-                'tip': "Use expected_return > 5% for attractive opportunities. Quasi-sovereigns include Pemex, Codelco, Petrobras etc."
+                'tip': "For investment-grade sovereign bonds, use min_rating='BBB-' and min_nfa_rating=3"
             }
 
             return [TextContent(
