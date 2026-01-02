@@ -368,19 +368,26 @@ def get_treasury_rates() -> Dict[str, Any]:
     """
     try:
         # Fetch from US Treasury Direct - primary source
-        year = datetime.now().year
-        url = (
-            f"https://home.treasury.gov/resource-center/data-chart-center/"
-            f"interest-rates/daily-treasury-rates.csv/{year}/all"
-            f"?type=daily_treasury_yield_curve&field_tdr_date_value={year}&page&_format=csv"
-        )
+        # Try current year first, fall back to previous year (early January edge case)
+        current_year = datetime.now().year
+        rows = []
 
-        response = requests.get(url, timeout=TIMEOUT)
-        response.raise_for_status()
+        for year in [current_year, current_year - 1]:
+            url = (
+                f"https://home.treasury.gov/resource-center/data-chart-center/"
+                f"interest-rates/daily-treasury-rates.csv/{year}/all"
+                f"?type=daily_treasury_yield_curve&field_tdr_date_value={year}&page&_format=csv"
+            )
 
-        # Parse CSV
-        reader = csv.DictReader(io.StringIO(response.text))
-        rows = list(reader)
+            response = requests.get(url, timeout=TIMEOUT)
+            response.raise_for_status()
+
+            # Parse CSV
+            reader = csv.DictReader(io.StringIO(response.text))
+            rows = list(reader)
+
+            if rows:
+                break  # Found data, stop trying
 
         if not rows:
             return {"error": "No treasury data available"}

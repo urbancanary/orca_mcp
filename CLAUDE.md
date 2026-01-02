@@ -89,6 +89,11 @@ ENABLED_TOOLS = {
     "get_nfa_rating",          # NFA star ratings
     "get_credit_rating",       # S&P/Moody's ratings
 
+    # Phase 3: FRED / Treasury data
+    "get_treasury_rates",      # US yield curve (1M to 30Y)
+    "get_fred_series",         # FRED time series (CPI, GDP, etc.)
+    "search_fred_series",      # Search FRED by keyword
+
     # Add more tools here as we validate them...
 }
 ```
