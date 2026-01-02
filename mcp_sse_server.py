@@ -51,6 +51,15 @@ ENABLED_TOOLS = {
     "get_fred_series",         # FRED time series (CPI, GDP, unemployment, etc.)
     "search_fred_series",      # Search FRED by keyword
 
+    # Phase 4: IMF data
+    "get_imf_indicator",       # IMF indicators (GDP growth, inflation, etc.)
+    "compare_imf_countries",   # Compare countries on IMF indicator
+
+    # Phase 5: World Bank data
+    "get_worldbank_indicator",       # World Bank development indicators
+    "search_worldbank_indicators",   # Search World Bank indicators
+    "get_worldbank_country_profile", # Country development profile
+
     # Add more tools here as we validate them...
 }
 
@@ -1190,23 +1199,60 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         # ============================================================================
-        # EXTERNAL MCP - IMF (with AI)
+        # IMF DATA (using internal gateway)
         # ============================================================================
-        elif name == "get_imf_indicator_external":
-            result = get_imf_indicator(
-                arguments["indicator"],
-                arguments["country"],
-                arguments.get("start_year"),
-                arguments.get("end_year"),
-                arguments.get("analyze", False)
+        elif name == "get_imf_indicator" or name == "get_imf_indicator_external":
+            # Convert country name to ISO code
+            country_input = arguments["country"]
+            country_info = standardize_country(country_input)
+            iso_code = country_info.get("imf_code") or country_info.get("iso_code", country_input)
+
+            # Map common indicator names to IMF codes
+            indicator = arguments["indicator"]
+            indicator_map = {
+                "gdp_growth": "NGDP_RPCH",
+                "inflation": "PCPIPCH",
+                "debt": "GGXWDG_NGDP",
+                "current_account": "BCA_NGDPD",
+            }
+            indicator = indicator_map.get(indicator.lower(), indicator)
+
+            result = fetch_imf_data(
+                indicator=indicator,
+                countries=iso_code,
+                start_year=arguments.get("start_year"),
+                end_year=arguments.get("end_year"),
+                use_mcp=False
             )
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         elif name == "compare_imf_countries":
-            result = compare_imf_countries(
-                arguments["indicator"],
-                arguments["countries"],
-                arguments.get("year")
+            # Convert country names to ISO codes
+            countries_list = arguments["countries"]
+            if isinstance(countries_list, str):
+                countries_list = [c.strip() for c in countries_list.split(",")]
+
+            iso_codes = []
+            for c in countries_list:
+                info = standardize_country(c)
+                iso_codes.append(info.get("imf_code") or info.get("iso_code", c))
+
+            # Map common indicator names to IMF codes
+            indicator = arguments["indicator"]
+            indicator_map = {
+                "gdp_growth": "NGDP_RPCH",
+                "inflation": "PCPIPCH",
+                "debt": "GGXWDG_NGDP",
+                "current_account": "BCA_NGDPD",
+            }
+            indicator = indicator_map.get(indicator.lower(), indicator)
+
+            result = fetch_imf_data(
+                indicator=indicator,
+                countries=",".join(iso_codes),
+                start_year=arguments.get("year"),
+                end_year=arguments.get("year"),
+                use_mcp=False
             )
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 

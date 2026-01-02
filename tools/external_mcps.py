@@ -217,7 +217,7 @@ def standardize_country(country: str) -> Dict[str, Any]:
         Dict with standardized name, ISO codes, aliases
     """
     try:
-        url = f"{MCP_URLS['country_mapping']}/standardize/{country}"
+        url = f"{MCP_URLS['country_mapping']}/map/{country}"
         response = _get(url)
         response.raise_for_status()
         return response.json()
