@@ -90,6 +90,7 @@ Given a user query and optional conversation context, determine which internal t
 - "inflation" without country specified → get_fred_series with CPIAUCSL (US inflation)
 - "GDP growth" without country → get_imf_indicator (international comparison)
 - "treasury" or "yield curve" → get_treasury_rates
+- "history of", "trend", "over time", "chart", "time series" → get_fred_timeseries (for historical data)
 
 ### Portfolio Queries
 - "holdings", "portfolio", "positions", "what do I own" → get_client_holdings
@@ -118,13 +119,14 @@ Given a user query and optional conversation context, determine which internal t
 
 ## Treasury & FRED (US Economic Data)
 1. get_treasury_rates() - No args. Returns full US Treasury yield curve (1M to 30Y). Use for: treasury rates, yield curve, government bonds
-2. get_fred_series(series_id, start_date?) - Get FRED time series. Common series:
+2. get_fred_series(series_id, start_date?) - Get FRED latest value + AI analysis. Use for: current value, quick check
    - DGS10, DGS2, DGS30 = Treasury rates
    - CPIAUCSL = CPI/Inflation
    - UNRATE = Unemployment rate
    - GDP = Gross Domestic Product
    - FEDFUNDS = Fed Funds rate
-3. search_fred_series(query) - Search FRED by keyword
+3. get_fred_timeseries(series_id, start_date?) - Get FRED historical data for charting. Returns array of {date, value}. Use for: trends, charts, historical analysis, "over time", "history of"
+4. search_fred_series(query) - Search FRED by keyword
 
 ## Credit Ratings
 4. get_nfa_rating(country, year?, history?) - NFA star rating (1-7 scale). Args: country name
@@ -232,6 +234,8 @@ If the query is ambiguous or you need more information:
 - "bonds from Brazil" -> {{"tool": "search_bonds_rvm", "args": {{"country": "Brazil"}}, "confidence": 0.92}}
 - "cash position" -> {{"tool": "get_portfolio_cash", "args": {{}}, "confidence": 0.95}}
 - "unemployment rate" -> {{"tool": "get_fred_series", "args": {{"series_id": "UNRATE"}}, "confidence": 0.90}}
+- "unemployment trend over time" -> {{"tool": "get_fred_timeseries", "args": {{"series_id": "UNRATE", "start_date": "2019-01-01"}}, "confidence": 0.92}}
+- "history of 10Y treasury" -> {{"tool": "get_fred_timeseries", "args": {{"series_id": "DGS10", "start_date": "2020-01-01"}}, "confidence": 0.90}}
 
 ### Queries Needing Clarification
 - "rating for" -> {{"tool": null, "clarification": "Please specify which country you'd like the rating for."}}

@@ -48,7 +48,8 @@ ENABLED_TOOLS = {
 
     # Phase 3: FRED / Treasury data
     "get_treasury_rates",      # US yield curve (1M to 30Y)
-    "get_fred_series",         # FRED time series (CPI, GDP, unemployment, etc.)
+    "get_fred_series",         # FRED latest value + analysis
+    "get_fred_timeseries",     # FRED historical data for charting
     "search_fred_series",      # Search FRED by keyword
 
     # Phase 4: IMF data
@@ -173,6 +174,7 @@ try:
         standardize_country,
         get_country_info,
         get_fred_series,
+        get_fred_timeseries,
         search_fred_series,
         get_treasury_rates,
         classify_issuer,
@@ -227,6 +229,7 @@ except ImportError:
         standardize_country,
         get_country_info,
         get_fred_series,
+        get_fred_timeseries,
         search_fred_series,
         get_treasury_rates,
         classify_issuer,
@@ -635,7 +638,7 @@ INTERNAL_TOOLS = [
         # ============================================================================
         Tool(
             name="get_fred_series",
-            description="Get FRED economic data. Common: DGS10 (10Y Treasury), CPIAUCSL (CPI), UNRATE (unemployment), FEDFUNDS",
+            description="Get FRED economic data (latest value + AI analysis). Common: DGS10 (10Y Treasury), CPIAUCSL (CPI), UNRATE (unemployment), FEDFUNDS",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -643,6 +646,18 @@ INTERNAL_TOOLS = [
                     "start_date": {"type": "string", "description": "Start date (YYYY-MM-DD)"},
                     "end_date": {"type": "string", "description": "End date (YYYY-MM-DD)"},
                     "analyze": {"type": "boolean", "description": "Include AI analysis"}
+                },
+                "required": ["series_id"]
+            }
+        ),
+        Tool(
+            name="get_fred_timeseries",
+            description="Get FRED historical time series data for charting. Returns array of {date, value} observations. Use for trends, charts, analysis over time.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "series_id": {"type": "string", "description": "FRED series ID (e.g., DGS10, CPIAUCSL, UNRATE)"},
+                    "start_date": {"type": "string", "description": "Start date (YYYY-MM-DD), default: 2019-01-01"}
                 },
                 "required": ["series_id"]
             }
@@ -1289,6 +1304,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 arguments.get("start_date"),
                 arguments.get("end_date"),
                 arguments.get("analyze", False)
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "get_fred_timeseries":
+            result = get_fred_timeseries(
+                arguments["series_id"],
+                arguments.get("start_date", "2019-01-01")
             )
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
