@@ -60,7 +60,22 @@ ENABLED_TOOLS = {
     "search_worldbank_indicators",   # Search World Bank indicators
     "get_worldbank_country_profile", # Country development profile
 
-    # Add more tools here as we validate them...
+    # Phase 6: Display-Ready endpoints (for thin frontends)
+    "get_holdings_display",          # Holdings with ALL display columns + _fmt values
+    "get_portfolio_dashboard",       # Single call for Portfolio/Summary page
+    "calculate_trade_settlement",    # Pre-trade settlement calculations
+    "get_transactions_display",      # Transaction history with formatting
+    "check_trade_compliance",        # Enhanced compliance with impact analysis
+    "get_cashflows_display",         # Projected coupons and maturities
+
+    # Phase 7: Additional portfolio tools
+    "get_client_transactions",       # Transaction history
+    "get_portfolio_cash",            # Cash positions
+    "search_bonds_rvm",              # Search bond universe by country/rating/return
+    "check_trade_compliance_impact", # Pre-trade compliance check
+
+    # Phase 8: Screening tools
+    "search_nfa_by_rating",          # Find countries by NFA star rating
 }
 
 # Add current directory to path for imports
@@ -141,6 +156,14 @@ try:
         check_compliance_impact,
         compliance_to_dict
     )
+    from tools.display_endpoints import (
+        get_holdings_display,
+        get_portfolio_dashboard,
+        calculate_trade_settlement,
+        get_transactions_display,
+        check_trade_compliance,
+        get_cashflows_display,
+    )
     from tools.external_mcps import (
         get_nfa_rating,
         get_nfa_batch,
@@ -186,6 +209,14 @@ except ImportError:
         check_compliance,
         check_compliance_impact,
         compliance_to_dict
+    )
+    from orca_mcp.tools.display_endpoints import (
+        get_holdings_display,
+        get_portfolio_dashboard,
+        calculate_trade_settlement,
+        get_transactions_display,
+        check_trade_compliance,
+        get_cashflows_display,
     )
     from orca_mcp.tools.external_mcps import (
         get_nfa_rating,
