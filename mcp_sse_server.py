@@ -1522,7 +1522,7 @@ async def health_check(request):
     return JSONResponse({
         "status": "healthy",
         "server": "orca-mcp-sse",
-        "version": "3.0.0",
+        "version": "3.1.0-25tools",
         "architecture": "Single orca_query router with internal tool routing",
         "transport": "sse",
         "claude_desktop_url": "/sse",
