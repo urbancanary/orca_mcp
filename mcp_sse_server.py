@@ -783,6 +783,96 @@ INTERNAL_TOOLS = [
                 "required": ["country"]
             }
         ),
+
+        # ============================================================================
+        # DISPLAY-READY ENDPOINTS (for thin frontends)
+        # ============================================================================
+        Tool(
+            name="get_holdings_display",
+            description="Get holdings with ALL display columns and formatted values (_fmt). Returns face_value, market_value, P&L, yield, duration, spread - all pre-formatted for direct display. Use this for Holdings page.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "portfolio_id": {"type": "string", "description": "Portfolio ID (default: 'wnbf')"},
+                    "include_staging": {"type": "boolean", "description": "Include staging holdings (default: false)"},
+                    "client_id": {"type": "string", "description": "Client ID"}
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="get_portfolio_dashboard",
+            description="Single call for Portfolio/Summary page. Returns summary stats (total value, cash, duration, yield), allocation breakdowns (by country, rating, sector), and compliance summary. All values include _fmt versions.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "portfolio_id": {"type": "string", "description": "Portfolio ID (default: 'wnbf')"},
+                    "client_id": {"type": "string", "description": "Client ID"}
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="calculate_trade_settlement",
+            description="Pre-trade settlement calculation. Returns principal, accrued interest, net settlement amount with formatted values. Uses 30/360 day count convention.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "isin": {"type": "string", "description": "Bond ISIN"},
+                    "face_value": {"type": "number", "description": "Face/par value of the trade"},
+                    "price": {"type": "number", "description": "Clean price as percentage of par"},
+                    "settle_date": {"type": "string", "description": "Settlement date (YYYY-MM-DD)"},
+                    "side": {"type": "string", "enum": ["BUY", "SELL"], "description": "Trade side"},
+                    "client_id": {"type": "string", "description": "Client ID"}
+                },
+                "required": ["isin", "face_value", "price", "settle_date"]
+            }
+        ),
+        Tool(
+            name="get_transactions_display",
+            description="Transaction history with display-ready formatting. Filter by type (BUY/SELL/COUPON), status, date range. Returns formatted values and summary.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "portfolio_id": {"type": "string", "description": "Portfolio ID (default: 'wnbf')"},
+                    "transaction_type": {"type": "string", "enum": ["ALL", "BUY", "SELL", "COUPON"], "description": "Filter by type"},
+                    "status": {"type": "string", "enum": ["ALL", "settled", "pending", "staging"], "description": "Filter by status"},
+                    "start_date": {"type": "string", "description": "Start date (YYYY-MM-DD)"},
+                    "end_date": {"type": "string", "description": "End date (YYYY-MM-DD)"},
+                    "limit": {"type": "integer", "description": "Max transactions (default: 100)"},
+                    "client_id": {"type": "string", "description": "Client ID"}
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="check_trade_compliance",
+            description="Enhanced pre-trade compliance check. Shows before/after compliance, impact analysis, warnings, errors, and can_proceed flag. Use this before executing trades.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "portfolio_id": {"type": "string", "description": "Portfolio ID (default: 'wnbf')"},
+                    "ticker": {"type": "string", "description": "Bond ticker"},
+                    "country": {"type": "string", "description": "Bond country"},
+                    "action": {"type": "string", "enum": ["buy", "sell"], "description": "Trade action"},
+                    "market_value": {"type": "number", "description": "Trade market value"}
+                },
+                "required": ["ticker", "country", "action", "market_value"]
+            }
+        ),
+        Tool(
+            name="get_cashflows_display",
+            description="Projected cashflows for Cashflows page. Returns upcoming coupons and maturities with summary, individual flows, and monthly breakdown. All amounts pre-formatted.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "portfolio_id": {"type": "string", "description": "Portfolio ID (default: 'wnbf')"},
+                    "months_ahead": {"type": "integer", "description": "How many months ahead (default: 12)"},
+                    "client_id": {"type": "string", "description": "Client ID"}
+                },
+                "required": []
+            }
+        ),
     ]
 
 
@@ -1306,6 +1396,62 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "get_worldbank_country_profile":
             result = get_worldbank_country_profile(arguments["country"])
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        # ============================================================================
+        # DISPLAY-READY ENDPOINTS (for thin frontends)
+        # ============================================================================
+        elif name == "get_holdings_display":
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
+            include_staging = arguments.get("include_staging", False)
+            result = get_holdings_display(portfolio_id, include_staging, client_id)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "get_portfolio_dashboard":
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
+            result = get_portfolio_dashboard(portfolio_id, client_id)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "calculate_trade_settlement":
+            result = calculate_trade_settlement(
+                isin=arguments["isin"],
+                face_value=arguments["face_value"],
+                price=arguments["price"],
+                settle_date=arguments["settle_date"],
+                side=arguments.get("side", "BUY"),
+                client_id=client_id
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "get_transactions_display":
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
+            result = get_transactions_display(
+                portfolio_id=portfolio_id,
+                transaction_type=arguments.get("transaction_type", "ALL"),
+                status=arguments.get("status", "ALL"),
+                start_date=arguments.get("start_date"),
+                end_date=arguments.get("end_date"),
+                limit=arguments.get("limit", 100),
+                client_id=client_id
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "check_trade_compliance":
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
+            result = check_trade_compliance(
+                portfolio_id=portfolio_id,
+                ticker=arguments["ticker"],
+                country=arguments["country"],
+                action=arguments["action"],
+                market_value=arguments["market_value"],
+                client_id=client_id
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "get_cashflows_display":
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
+            months_ahead = arguments.get("months_ahead", 12)
+            result = get_cashflows_display(portfolio_id, months_ahead, client_id)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]

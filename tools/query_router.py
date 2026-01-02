@@ -188,6 +188,14 @@ Given a user query and optional conversation context, determine which internal t
 37. standardize_country(country) - Normalize country name to standard form
 38. get_country_info(country) - Country details (ISO codes, region, etc.)
 
+## Display-Ready Endpoints (for thin frontends - all values include _fmt versions)
+39. get_holdings_display(portfolio_id?) - Holdings with ALL display columns and formatted values. Use for Holdings page.
+40. get_portfolio_dashboard(portfolio_id?) - Single call for Portfolio/Summary page: stats, allocations, compliance summary.
+41. calculate_trade_settlement(isin, face_value, price, settle_date, side?) - Pre-trade settlement calculation: principal, accrued, net settlement.
+42. get_transactions_display(portfolio_id?, transaction_type?, status?, start_date?, end_date?, limit?) - Transaction history with formatting.
+43. check_trade_compliance(portfolio_id?, ticker, country, action, market_value) - Enhanced pre-trade compliance with impact analysis.
+44. get_cashflows_display(portfolio_id?, months_ahead?) - Projected coupons and maturities with monthly breakdown.
+
 RESPONSE FORMAT:
 Respond with valid JSON only, no other text:
 {{"tool": "tool_name", "args": {{"arg1": "value1"}}, "confidence": 0.95}}
@@ -206,6 +214,15 @@ If the query is ambiguous or you need more information:
 - "my holdings" -> {{"tool": "get_client_holdings", "args": {{}}, "confidence": 0.95}}
 - "show me the watchlist" -> {{"tool": "get_watchlist", "args": {{}}, "confidence": 0.95}}
 - "check compliance" -> {{"tool": "get_compliance_status", "args": {{}}, "confidence": 0.95}}
+
+### Display-Ready Endpoints (for UI pages)
+- "show holdings table" -> {{"tool": "get_holdings_display", "args": {{}}, "confidence": 0.95}}
+- "portfolio dashboard" -> {{"tool": "get_portfolio_dashboard", "args": {{}}, "confidence": 0.95}}
+- "calculate settlement for Brazil 2050, 500k at 82.5" -> {{"tool": "calculate_trade_settlement", "args": {{"isin": "US105756BV13", "face_value": 500000, "price": 82.5, "settle_date": "2026-01-04"}}, "confidence": 0.90}}
+- "transaction history" -> {{"tool": "get_transactions_display", "args": {{}}, "confidence": 0.95}}
+- "check if I can buy Brazil at 500k" -> {{"tool": "check_trade_compliance", "args": {{"ticker": "BRAZIL", "country": "Brazil", "action": "buy", "market_value": 500000}}, "confidence": 0.90}}
+- "upcoming cashflows" -> {{"tool": "get_cashflows_display", "args": {{}}, "confidence": 0.95}}
+- "show me coupon schedule" -> {{"tool": "get_cashflows_display", "args": {{}}, "confidence": 0.92}}
 
 ### Disambiguation Examples (apply rules)
 - "Colombia" -> {{"tool": "get_nfa_rating", "args": {{"country": "Colombia"}}, "confidence": 0.90}}
@@ -338,6 +355,7 @@ CAPABILITIES:
 - Compliance: UCITS 5/10/40 checks, pre-trade impact analysis
 - Bonds: RVM database search, issuer classification
 - Video: Search transcripts, get summaries
+- Display-ready endpoints: Holdings, dashboard, transactions, cashflows with formatted values
 
 EXAMPLES:
 - "What's the current 10Y treasury rate?"
@@ -348,5 +366,8 @@ EXAMPLES:
 - "Check compliance status for GA10"
 - "Search for bonds from Mexico rated BBB or higher"
 - "Show me the watchlist"
+- "Show portfolio dashboard"
+- "Calculate settlement for 500k Brazil at 82.5"
+- "Show upcoming cashflows"
 
 Just describe what you need in natural language."""
