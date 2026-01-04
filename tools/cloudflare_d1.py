@@ -11,8 +11,18 @@ import urllib.error
 import urllib.parse
 from typing import Any, Dict, List, Optional
 import pandas as pd
+import sys
+from pathlib import Path
 
-from ..client_config import get_client_config
+# Add parent directory to path for imports
+SCRIPT_DIR = Path(__file__).parent.parent.resolve()
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+try:
+    from ..client_config import get_client_config
+except ImportError:
+    from client_config import get_client_config
 
 
 def get_orca_url() -> str:
