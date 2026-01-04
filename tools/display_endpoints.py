@@ -22,7 +22,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 try:
-    from .cloudflare_d1 import (
+    from .data_router import (
         get_holdings,
         get_holdings_summary,
         get_transactions,
@@ -30,7 +30,7 @@ try:
     )
     from .compliance import check_compliance, compliance_to_dict
 except ImportError:
-    from tools.cloudflare_d1 import (
+    from tools.data_router import (
         get_holdings,
         get_holdings_summary,
         get_transactions,
