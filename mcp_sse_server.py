@@ -1156,10 +1156,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                         for c in countries:
                             try:
                                 nfa = get_nfa_rating(c)
-                                if 'nfa_star_rating' in nfa:
+                                if isinstance(nfa, dict) and 'nfa_star_rating' in nfa:
                                     country_nfa[c] = nfa['nfa_star_rating']
-                            except:
-                                pass
+                                elif isinstance(nfa, dict) and 'error' in nfa:
+                                    logger.warning(f"NFA lookup error for {c}: {nfa.get('error')}")
+                            except (KeyError, TypeError, ValueError, AttributeError) as e:
+                                logger.warning(f"Failed to extract NFA rating for {c}: {e}")
+                            except Exception as e:
+                                logger.error(f"Unexpected error fetching NFA rating for {c}: {e}")
                         watchlist = [b for b in watchlist
                                     if country_nfa.get(b.get('country') or b.get('cbonds_country'), 0) >= min_nfa_rating]
 
