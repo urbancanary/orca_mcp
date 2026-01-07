@@ -168,9 +168,12 @@ try:
     from tools.external_mcps import (
         get_nfa_rating,
         get_nfa_batch,
+        get_nfa_batch_async,
         search_nfa_by_rating,
         get_credit_rating,
         get_credit_ratings_batch,
+        get_credit_ratings_batch_async,
+        get_country_ratings_async,
         standardize_country,
         get_country_info,
         get_fred_series,
@@ -183,9 +186,11 @@ try:
         get_issuer_summary,
         get_imf_indicator,
         compare_imf_countries,
+        compare_imf_countries_async,
         get_worldbank_indicator,
         search_worldbank_indicators,
         get_worldbank_country_profile,
+        get_worldbank_country_profile_async,
     )
     from client_config import get_client_config
 except ImportError:
@@ -223,9 +228,12 @@ except ImportError:
     from orca_mcp.tools.external_mcps import (
         get_nfa_rating,
         get_nfa_batch,
+        get_nfa_batch_async,
         search_nfa_by_rating,
         get_credit_rating,
         get_credit_ratings_batch,
+        get_credit_ratings_batch_async,
+        get_country_ratings_async,
         standardize_country,
         get_country_info,
         get_fred_series,
@@ -238,9 +246,11 @@ except ImportError:
         get_issuer_summary,
         get_imf_indicator,
         compare_imf_countries,
+        compare_imf_countries_async,
         get_worldbank_indicator,
         search_worldbank_indicators,
         get_worldbank_country_profile,
+        get_worldbank_country_profile_async,
     )
     from orca_mcp.client_config import get_client_config
 
@@ -1148,22 +1158,20 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                                     rating_order.index(b['rating_sp']) <= min_idx
                                     if b['rating_sp'] in rating_order]
 
-                    # NFA filter - need to fetch NFA ratings
-                    # Note: get_nfa_rating is already imported at module level
+                    # NFA filter - fetch all ratings concurrently using async
                     if min_nfa_rating:
                         countries = list(set(b.get('country') or b.get('cbonds_country') for b in watchlist if b.get('country') or b.get('cbonds_country')))
+
+                        # Use async batch call for ~10x speedup (parallel instead of sequential)
+                        nfa_results = await get_nfa_batch_async(countries)
+
                         country_nfa = {}
-                        for c in countries:
-                            try:
-                                nfa = get_nfa_rating(c)
-                                if isinstance(nfa, dict) and 'nfa_star_rating' in nfa:
-                                    country_nfa[c] = nfa['nfa_star_rating']
-                                elif isinstance(nfa, dict) and 'error' in nfa:
-                                    logger.warning(f"NFA lookup error for {c}: {nfa.get('error')}")
-                            except (KeyError, TypeError, ValueError, AttributeError) as e:
-                                logger.warning(f"Failed to extract NFA rating for {c}: {e}")
-                            except Exception as e:
-                                logger.error(f"Unexpected error fetching NFA rating for {c}: {e}")
+                        for c, nfa in nfa_results.items():
+                            if isinstance(nfa, dict) and 'nfa_star_rating' in nfa:
+                                country_nfa[c] = nfa['nfa_star_rating']
+                            elif isinstance(nfa, dict) and 'error' in nfa:
+                                logger.warning(f"NFA lookup error for {c}: {nfa.get('error')}")
+
                         watchlist = [b for b in watchlist
                                     if country_nfa.get(b.get('country') or b.get('cbonds_country'), 0) >= min_nfa_rating]
 

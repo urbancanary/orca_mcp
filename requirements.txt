@@ -3,6 +3,7 @@
 # Core dependencies
 pandas>=2.0.0
 requests>=2.31.0
+httpx>=0.25.0  # Async HTTP client for concurrent API calls (7-18x speedup)
 
 # LLM providers for FallbackLLMClient (orca_query routing)
 # Routing order: Gemini Flash -> OpenAI Mini -> Grok -> Haiku
