@@ -26,6 +26,7 @@ gunicorn>=21.0.0
 
 # MCP SDK and SSE transport (for Claude Desktop remote connections)
 mcp>=1.0.0
+fastapi>=0.109.0  # Modern async web framework with auto-docs
 starlette>=0.27.0
 uvicorn>=0.23.0
 sse-starlette>=1.6.0
