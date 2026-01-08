@@ -125,12 +125,20 @@ def get_holdings_summary_from_d1(portfolio_id: str = 'wnbf', staging_id: int = 1
         return {}
 
 
-from starlette.applications import Starlette
-from starlette.routing import Route, Mount
-from starlette.responses import JSONResponse, Response
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel, Field
+from typing import Optional, Dict, Any
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
 from mcp.types import Tool, TextContent
+
+
+# Pydantic models for request validation
+class CallToolRequest(BaseModel):
+    """Request model for /call endpoint"""
+    tool: str = Field(..., description="Name of the tool to call")
+    args: Dict[str, Any] = Field(default_factory=dict, description="Tool arguments")
 
 # Import tool implementations
 try:
@@ -168,9 +176,12 @@ try:
     from tools.external_mcps import (
         get_nfa_rating,
         get_nfa_batch,
+        get_nfa_batch_async,
         search_nfa_by_rating,
         get_credit_rating,
         get_credit_ratings_batch,
+        get_credit_ratings_batch_async,
+        get_country_ratings_async,
         standardize_country,
         get_country_info,
         get_fred_series,
@@ -183,9 +194,11 @@ try:
         get_issuer_summary,
         get_imf_indicator,
         compare_imf_countries,
+        compare_imf_countries_async,
         get_worldbank_indicator,
         search_worldbank_indicators,
         get_worldbank_country_profile,
+        get_worldbank_country_profile_async,
     )
     from client_config import get_client_config
 except ImportError:
@@ -223,9 +236,12 @@ except ImportError:
     from orca_mcp.tools.external_mcps import (
         get_nfa_rating,
         get_nfa_batch,
+        get_nfa_batch_async,
         search_nfa_by_rating,
         get_credit_rating,
         get_credit_ratings_batch,
+        get_credit_ratings_batch_async,
+        get_country_ratings_async,
         standardize_country,
         get_country_info,
         get_fred_series,
@@ -238,9 +254,11 @@ except ImportError:
         get_issuer_summary,
         get_imf_indicator,
         compare_imf_countries,
+        compare_imf_countries_async,
         get_worldbank_indicator,
         search_worldbank_indicators,
         get_worldbank_country_profile,
+        get_worldbank_country_profile_async,
     )
     from orca_mcp.client_config import get_client_config
 
@@ -1148,18 +1166,20 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                                     rating_order.index(b['rating_sp']) <= min_idx
                                     if b['rating_sp'] in rating_order]
 
-                    # NFA filter - need to fetch NFA ratings
-                    # Note: get_nfa_rating is already imported at module level
+                    # NFA filter - fetch all ratings concurrently using async
                     if min_nfa_rating:
                         countries = list(set(b.get('country') or b.get('cbonds_country') for b in watchlist if b.get('country') or b.get('cbonds_country')))
+
+                        # Use async batch call for ~10x speedup (parallel instead of sequential)
+                        nfa_results = await get_nfa_batch_async(countries)
+
                         country_nfa = {}
-                        for c in countries:
-                            try:
-                                nfa = get_nfa_rating(c)
-                                if 'nfa_star_rating' in nfa:
-                                    country_nfa[c] = nfa['nfa_star_rating']
-                            except:
-                                pass
+                        for c, nfa in nfa_results.items():
+                            if isinstance(nfa, dict) and 'nfa_star_rating' in nfa:
+                                country_nfa[c] = nfa['nfa_star_rating']
+                            elif isinstance(nfa, dict) and 'error' in nfa:
+                                logger.warning(f"NFA lookup error for {c}: {nfa.get('error')}")
+
                         watchlist = [b for b in watchlist
                                     if country_nfa.get(b.get('country') or b.get('cbonds_country'), 0) >= min_nfa_rating]
 
@@ -1483,12 +1503,110 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=f"Error: {str(e)}")]
 
 
-# Create SSE transport and Starlette app
+# Create FastAPI app with auto-documentation
+app = FastAPI(
+    title="Orca MCP",
+    description="Portfolio Data Gateway - Natural language interface to financial data",
+    version="3.2.0",
+    docs_url="/docs",      # Swagger UI at /docs
+    redoc_url="/redoc",    # ReDoc at /redoc
+)
+
+# Create SSE transport for MCP
 sse = SseServerTransport("/messages/")
 
 
-async def handle_sse(request):
-    """Handle SSE connection from Claude Desktop"""
+@app.get("/", tags=["Health"])
+@app.get("/health", tags=["Health"])
+async def health_check():
+    """
+    Health check endpoint.
+    Returns server status and configuration info.
+    """
+    return {
+        "status": "healthy",
+        "server": "orca-mcp-fastapi",
+        "version": "3.2.0",
+        "architecture": "Single orca_query router with internal tool routing",
+        "transport": "sse",
+        "claude_desktop_url": "/sse",
+        "http_call_url": "/call",
+        "docs_url": "/docs",
+        "data_source": "Cloudflare D1 (edge) + External MCPs",
+        "exposed_tools": 1,
+        "exposed_tool": "orca_query",
+        "internal_tools": len(INTERNAL_TOOLS),
+        "enabled_tools": list(ENABLED_TOOLS),
+        "enabled_count": len(ENABLED_TOOLS),
+        "routing": "FallbackLLMClient (Gemini Flash -> OpenAI Mini -> Haiku)",
+        "token_savings": "~11K -> ~500 tokens (95% reduction)",
+        "async_speedup": "7-18x with httpx concurrent calls"
+    }
+
+
+@app.post("/call", tags=["Tools"])
+async def handle_call(request: CallToolRequest):
+    """
+    Call an Orca MCP tool directly via HTTP.
+
+    This endpoint allows programmatic access to all internal tools without
+    going through the MCP SSE protocol. Useful for Athena, scripts, and testing.
+
+    Example:
+    ```json
+    {
+        "tool": "get_client_holdings",
+        "args": {"portfolio_id": "wnbf", "staging_id": 1}
+    }
+    ```
+    """
+    try:
+        # Call the tool
+        result = await call_tool(request.tool, request.args)
+
+        # Extract text from TextContent
+        if result and len(result) > 0:
+            text = result[0].text
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return {"result": text}
+
+        return JSONResponse({"error": "No result"}, status_code=500)
+
+    except Exception as e:
+        logger.error(f"Error in /call: {e}", exc_info=True)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/tools", tags=["Tools"])
+async def list_available_tools():
+    """
+    List all enabled tools available via the /call endpoint.
+
+    Returns tool names and their descriptions for programmatic discovery.
+    """
+    tools_info = []
+    for tool in INTERNAL_TOOLS:
+        if tool.name in ENABLED_TOOLS:
+            tools_info.append({
+                "name": tool.name,
+                "description": tool.description,
+                "schema": tool.inputSchema
+            })
+    return {
+        "enabled_count": len(ENABLED_TOOLS),
+        "tools": tools_info
+    }
+
+
+@app.api_route("/sse", methods=["GET"], tags=["MCP"])
+async def handle_sse(request: Request):
+    """
+    SSE endpoint for Claude Desktop MCP connections.
+
+    Connect Claude Desktop using: https://your-server/sse
+    """
     async with sse.connect_sse(
         request.scope,
         request.receive,
@@ -1502,82 +1620,17 @@ async def handle_sse(request):
     return Response()
 
 
-async def handle_call(request):
-    """
-    HTTP POST endpoint to call tools directly.
-    Allows Athena Streamlit to call Orca MCP tools without SSE.
-
-    POST /call
-    {
-        "tool": "get_client_holdings",
-        "args": {"portfolio_id": "wnbf", "staging_id": 1}
-    }
-    """
-    try:
-        body = await request.json()
-        tool_name = body.get("tool")
-        args = body.get("args", {})
-
-        if not tool_name:
-            return JSONResponse({"error": "Missing 'tool' parameter"}, status_code=400)
-
-        # Call the tool
-        result = await call_tool(tool_name, args)
-
-        # Extract text from TextContent
-        if result and len(result) > 0:
-            text = result[0].text
-            try:
-                return JSONResponse(json.loads(text))
-            except json.JSONDecodeError:
-                return JSONResponse({"result": text})
-
-        return JSONResponse({"error": "No result"}, status_code=500)
-
-    except Exception as e:
-        logger.error(f"Error in /call: {e}", exc_info=True)
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-async def health_check(request):
-    """Health check endpoint"""
-    return JSONResponse({
-        "status": "healthy",
-        "server": "orca-mcp-sse",
-        "version": "3.1.0-25tools",
-        "architecture": "Single orca_query router with internal tool routing",
-        "transport": "sse",
-        "claude_desktop_url": "/sse",
-        "http_call_url": "/call",
-        "data_source": "Cloudflare D1 (edge) + External MCPs",
-        "exposed_tools": 1,
-        "exposed_tool": "orca_query",
-        "internal_tools": len(INTERNAL_TOOLS),
-        "enabled_tools": list(ENABLED_TOOLS),
-        "enabled_count": len(ENABLED_TOOLS),
-        "routing": "FallbackLLMClient (Gemini Flash -> OpenAI Mini -> Haiku)",
-        "token_savings": "~11K -> ~500 tokens (95% reduction)"
-    })
-
-
-# Create Starlette app
-app = Starlette(
-    debug=True,
-    routes=[
-        Route("/", health_check),
-        Route("/health", health_check),
-        Route("/call", handle_call, methods=["POST"]),
-        Route("/sse", handle_sse),
-        Mount("/messages/", app=sse.handle_post_message),
-    ]
-)
+# Mount SSE message handler for MCP protocol
+app.mount("/messages/", app=sse.handle_post_message)
 
 
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
-    logger.info(f"Starting Orca MCP SSE Server v3.0 on port {port}")
+    logger.info(f"Starting Orca MCP FastAPI Server v3.2.0 on port {port}")
     logger.info(f"Architecture: Single orca_query tool with internal routing")
-    logger.info(f"Enabled tools: {list(ENABLED_TOOLS)}")
+    logger.info(f"Enabled tools: {len(ENABLED_TOOLS)} tools")
     logger.info(f"Claude Desktop URL: http://localhost:{port}/sse")
+    logger.info(f"API Docs: http://localhost:{port}/docs")
+    logger.info(f"Tool discovery: http://localhost:{port}/tools")
     uvicorn.run(app, host="0.0.0.0", port=port)

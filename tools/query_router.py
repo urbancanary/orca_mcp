@@ -313,12 +313,18 @@ async def route_query(query: str, context: str = "", model_override: str = None)
         model_used = f"{response.provider}/{response.model_used}"
 
         # Parse JSON response
-        # Handle potential markdown code blocks
+        # Handle potential markdown code blocks safely
         if result_text.startswith("```"):
-            result_text = result_text.split("```")[1]
-            if result_text.startswith("json"):
-                result_text = result_text[4:]
-            result_text = result_text.strip()
+            parts = result_text.split("```")
+            if len(parts) >= 2:
+                result_text = parts[1]
+                if result_text.startswith("json"):
+                    result_text = result_text[4:]
+                result_text = result_text.strip()
+            else:
+                # Malformed markdown - try to extract JSON directly
+                logger.warning(f"Malformed markdown in router response: {result_text[:100]}")
+                result_text = result_text[3:].strip()  # Remove opening ```
 
         result = json.loads(result_text)
 
