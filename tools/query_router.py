@@ -125,7 +125,7 @@ Given a user query and optional conversation context, determine which internal t
    - UNRATE = Unemployment rate
    - GDP = Gross Domestic Product
    - FEDFUNDS = Fed Funds rate
-3. get_fred_timeseries(series_id, start_date?) - Get FRED historical data for charting. Returns array of {date, value}. Use for: trends, charts, historical analysis, "over time", "history of"
+3. get_fred_timeseries(series_id, start_date?) - Get FRED historical data for charting. Returns array of {{date, value}}. Use for: trends, charts, historical analysis, "over time", "history of"
 4. search_fred_series(query) - Search FRED by keyword
 
 ## Credit Ratings
