@@ -77,6 +77,11 @@ ENABLED_TOOLS = {
 
     # Phase 8: Screening tools
     "search_nfa_by_rating",          # Find countries by NFA star rating
+
+    # Phase 9: Supabase MCP (parallel async)
+    "get_portfolio_with_ratings",    # Holdings + NFA + credit ratings in parallel
+    "get_supabase_holdings",         # Holdings from Supabase
+    "get_supabase_dashboard",        # Dashboard from Supabase
 }
 
 # Add current directory to path for imports
@@ -175,10 +180,12 @@ try:
     )
     from tools.external_mcps import (
         get_nfa_rating,
+        get_nfa_rating_async,
         get_nfa_batch,
         get_nfa_batch_async,
         search_nfa_by_rating,
         get_credit_rating,
+        get_credit_rating_async,
         get_credit_ratings_batch,
         get_credit_ratings_batch_async,
         get_country_ratings_async,
@@ -199,6 +206,18 @@ try:
         search_worldbank_indicators,
         get_worldbank_country_profile,
         get_worldbank_country_profile_async,
+        # Supabase MCP
+        get_supabase_holdings,
+        get_supabase_holdings_async,
+        get_supabase_transactions,
+        get_supabase_portfolio_summary,
+        get_supabase_portfolio_summary_async,
+        get_supabase_dashboard,
+        get_supabase_dashboard_async,
+        get_supabase_watchlist,
+        add_to_supabase_watchlist,
+        remove_from_supabase_watchlist,
+        get_portfolio_with_ratings_async,
     )
     from client_config import get_client_config
 except ImportError:
@@ -235,10 +254,12 @@ except ImportError:
     )
     from orca_mcp.tools.external_mcps import (
         get_nfa_rating,
+        get_nfa_rating_async,
         get_nfa_batch,
         get_nfa_batch_async,
         search_nfa_by_rating,
         get_credit_rating,
+        get_credit_rating_async,
         get_credit_ratings_batch,
         get_credit_ratings_batch_async,
         get_country_ratings_async,
@@ -259,6 +280,18 @@ except ImportError:
         search_worldbank_indicators,
         get_worldbank_country_profile,
         get_worldbank_country_profile_async,
+        # Supabase MCP
+        get_supabase_holdings,
+        get_supabase_holdings_async,
+        get_supabase_transactions,
+        get_supabase_portfolio_summary,
+        get_supabase_portfolio_summary_async,
+        get_supabase_dashboard,
+        get_supabase_dashboard_async,
+        get_supabase_watchlist,
+        add_to_supabase_watchlist,
+        remove_from_supabase_watchlist,
+        get_portfolio_with_ratings_async,
     )
     from orca_mcp.client_config import get_client_config
 
@@ -906,6 +939,43 @@ INTERNAL_TOOLS = [
                 "required": []
             }
         ),
+
+        # ============================================================================
+        # SUPABASE MCP - PARALLEL ASYNC TOOLS
+        # ============================================================================
+        Tool(
+            name="get_portfolio_with_ratings",
+            description="Get portfolio holdings with NFA and credit ratings for all countries - ALL IN PARALLEL. ~10x faster than sequential calls. Returns holdings, country ratings (NFA stars + S&P/Moody's).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "portfolio_id": {"type": "string", "description": "Portfolio ID (default: 'wnbf')"}
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="get_supabase_holdings",
+            description="Get portfolio holdings from Supabase. Alternative to D1 for Supabase-enabled portfolios.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "portfolio_id": {"type": "string", "description": "Portfolio ID"}
+                },
+                "required": ["portfolio_id"]
+            }
+        ),
+        Tool(
+            name="get_supabase_dashboard",
+            description="Get full dashboard (summary + allocations) from Supabase.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "portfolio_id": {"type": "string", "description": "Portfolio ID"}
+                },
+                "required": ["portfolio_id"]
+            }
+        ),
     ]
 
 
@@ -1493,6 +1563,25 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             portfolio_id = arguments.get("portfolio_id", "wnbf")
             months_ahead = arguments.get("months_ahead", 12)
             result = get_cashflows_display(portfolio_id, months_ahead, client_id)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        # ============================================================================
+        # SUPABASE MCP - PARALLEL ASYNC
+        # ============================================================================
+        elif name == "get_portfolio_with_ratings":
+            # Parallel async: holdings + all country ratings at once
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
+            result = await get_portfolio_with_ratings_async(portfolio_id)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "get_supabase_holdings":
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
+            result = await get_supabase_holdings_async(portfolio_id)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "get_supabase_dashboard":
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
+            result = await get_supabase_dashboard_async(portfolio_id)
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         else:

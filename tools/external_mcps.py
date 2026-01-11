@@ -1,5 +1,5 @@
 """
-External MCP Gateway - Wrappers for external Cloudflare Worker MCPs
+External MCP Gateway - Wrappers for external MCP services
 
 These tools provide access to external MCP services via HTTP:
 - NFA MCP: Net Foreign Assets star ratings
@@ -9,15 +9,16 @@ These tools provide access to external MCP services via HTTP:
 - Sovereign Classification MCP: Issuer type classification
 - IMF MCP: IMF economic indicators (with AI analysis)
 - World Bank MCP: World Bank development indicators
+- Supabase MCP: Portfolio data gateway (holdings, transactions, watchlist)
 
 Authentication:
-- Self-validating tokens generated on the fly
-- Token format: {random}-{SHA256(random)[:8]}
-- No secrets, no storage - just math
+- Cloudflare Workers: Self-validating tokens (no secrets needed)
+- Supabase MCP: No auth required (keys handled internally)
 """
 
 import asyncio
 import hashlib
+import os
 import secrets
 import requests
 import logging
@@ -35,9 +36,28 @@ except ImportError:
     HTTPX_AVAILABLE = False
     httpx = None
 
+# Auth client for fetching service URLs/keys from auth_mcp
+try:
+    from auth_client import get_api_key
+    AUTH_CLIENT_AVAILABLE = True
+except ImportError:
+    AUTH_CLIENT_AVAILABLE = False
+    get_api_key = None
+
 logger = logging.getLogger("orca-mcp.external")
 
-# MCP Service URLs
+
+def _get_supabase_mcp_url() -> str:
+    """Get Supabase MCP URL from auth_mcp or environment."""
+    # Try auth_mcp first
+    if AUTH_CLIENT_AVAILABLE and get_api_key:
+        url = get_api_key("SUPABASE_MCP_URL", fallback_env=False, requester="orca-mcp")
+        if url:
+            return url
+    # Fallback to environment variable
+    return os.environ.get("SUPABASE_MCP_URL", "http://localhost:8001")
+
+# MCP Service URLs (supabase fetched lazily from auth_mcp)
 MCP_URLS = {
     "nfa": "https://nfa-mcp.urbancanary.workers.dev",
     "rating": "https://rating-mcp.urbancanary.workers.dev",
@@ -47,6 +67,17 @@ MCP_URLS = {
     "imf": "https://imf-mcp.urbancanary.workers.dev",
     "worldbank": "https://worldbank-mcp.urbancanary.workers.dev",
 }
+
+# Lazy-loaded URL (fetched from auth_mcp on first use)
+_supabase_mcp_url_cache = None
+
+def _get_supabase_url() -> str:
+    """Get cached Supabase MCP URL."""
+    global _supabase_mcp_url_cache
+    if _supabase_mcp_url_cache is None:
+        _supabase_mcp_url_cache = _get_supabase_mcp_url()
+        logger.info(f"Supabase MCP URL: {_supabase_mcp_url_cache}")
+    return _supabase_mcp_url_cache
 
 TIMEOUT = 30  # seconds
 
@@ -1036,3 +1067,320 @@ async def get_worldbank_country_profile_async(country: str) -> Dict[str, Any]:
                 results["indicators"][ind] = response
 
         return results
+
+
+# ============================================================================
+# SUPABASE MCP - Portfolio Data Gateway
+# ============================================================================
+
+def _call_supabase_mcp(tool: str, args: Dict[str, Any] = None) -> Dict[str, Any]:
+    """
+    Call a Supabase MCP tool.
+
+    Args:
+        tool: Tool name (e.g., 'get_holdings_display', 'query')
+        args: Tool arguments
+
+    Returns:
+        Tool result or error dict
+    """
+    try:
+        url = f"{_get_supabase_url()}/call"
+        payload = {"tool": tool, "args": args or {}}
+        response = _post(url, json_data=payload)
+        response.raise_for_status()
+        result = response.json()
+
+        if result.get("success"):
+            return result.get("result")
+        return {"error": result.get("error", "Unknown error")}
+    except Exception as e:
+        logger.error(f"Supabase MCP error calling {tool}: {e}")
+        return {"error": str(e)}
+
+
+def get_supabase_holdings(portfolio_id: str) -> Dict[str, Any]:
+    """
+    Get portfolio holdings via Supabase MCP.
+
+    Args:
+        portfolio_id: Portfolio identifier (e.g., 'wnbf')
+
+    Returns:
+        Holdings with weights and totals
+    """
+    return _call_supabase_mcp("get_holdings_display", {"portfolio_id": portfolio_id})
+
+
+def get_supabase_transactions(
+    portfolio_id: str,
+    status: str = None,
+    limit: int = None,
+) -> Dict[str, Any]:
+    """
+    Get portfolio transactions via Supabase MCP.
+
+    Args:
+        portfolio_id: Portfolio identifier
+        status: Filter by status (settled, pending, staging)
+        limit: Max transactions to return
+
+    Returns:
+        Formatted transaction list
+    """
+    args = {"portfolio_id": portfolio_id}
+    if status:
+        args["status"] = status
+    if limit:
+        args["limit"] = limit
+    return _call_supabase_mcp("get_transactions_display", args)
+
+
+def get_supabase_portfolio_summary(portfolio_id: str) -> Dict[str, Any]:
+    """
+    Get portfolio summary via Supabase MCP.
+
+    Args:
+        portfolio_id: Portfolio identifier
+
+    Returns:
+        Summary with aggregated metrics
+    """
+    return _call_supabase_mcp("get_portfolio_summary", {"portfolio_id": portfolio_id})
+
+
+def get_supabase_dashboard(portfolio_id: str) -> Dict[str, Any]:
+    """
+    Get full dashboard data via Supabase MCP.
+
+    Args:
+        portfolio_id: Portfolio identifier
+
+    Returns:
+        Dashboard with summary and allocations
+    """
+    return _call_supabase_mcp("get_portfolio_dashboard", {"portfolio_id": portfolio_id})
+
+
+def get_supabase_watchlist(portfolio_id: str = None) -> List[Dict[str, Any]]:
+    """
+    Get watchlist via Supabase MCP.
+
+    Args:
+        portfolio_id: Optional portfolio filter
+
+    Returns:
+        Watchlist items with bond details
+    """
+    args = {}
+    if portfolio_id:
+        args["portfolio_id"] = portfolio_id
+    return _call_supabase_mcp("get_watchlist", args)
+
+
+def add_to_supabase_watchlist(
+    isin: str,
+    portfolio_id: str = None,
+    notes: str = None,
+) -> Dict[str, Any]:
+    """
+    Add a bond to watchlist via Supabase MCP.
+
+    Args:
+        isin: Bond ISIN
+        portfolio_id: Optional portfolio to associate
+        notes: Optional notes
+
+    Returns:
+        Success status and created item
+    """
+    args = {"isin": isin}
+    if portfolio_id:
+        args["portfolio_id"] = portfolio_id
+    if notes:
+        args["notes"] = notes
+    return _call_supabase_mcp("add_to_watchlist", args)
+
+
+def remove_from_supabase_watchlist(isin: str, portfolio_id: str = None) -> Dict[str, Any]:
+    """
+    Remove a bond from watchlist via Supabase MCP.
+
+    Args:
+        isin: Bond ISIN
+        portfolio_id: Optional portfolio filter
+
+    Returns:
+        Success status and deletion count
+    """
+    args = {"isin": isin}
+    if portfolio_id:
+        args["portfolio_id"] = portfolio_id
+    return _call_supabase_mcp("remove_from_watchlist", args)
+
+
+def query_supabase(
+    table: str,
+    select: str = "*",
+    filters: Dict[str, str] = None,
+    order: str = None,
+    limit: int = None,
+) -> List[Dict[str, Any]]:
+    """
+    Generic Supabase query via Supabase MCP.
+
+    Args:
+        table: Table name
+        select: Columns to select (supports joins like '*, bonds(*)')
+        filters: PostgREST filters (e.g., {'status': 'eq.active'})
+        order: Order clause (e.g., 'created_at.desc')
+        limit: Max rows
+
+    Returns:
+        Query results
+    """
+    args = {"table": table, "select": select}
+    if filters:
+        args["filters"] = filters
+    if order:
+        args["order"] = order
+    if limit:
+        args["limit"] = limit
+    return _call_supabase_mcp("query", args)
+
+
+# ============================================================================
+# SUPABASE MCP - ASYNC VERSIONS (for parallel calls)
+# ============================================================================
+
+async def _call_supabase_mcp_async(
+    tool: str,
+    args: Dict[str, Any] = None,
+    client: "httpx.AsyncClient" = None,
+) -> Dict[str, Any]:
+    """Async version of _call_supabase_mcp."""
+    if not HTTPX_AVAILABLE:
+        return _call_supabase_mcp(tool, args)
+
+    try:
+        url = f"{_get_supabase_url()}/call"
+        payload = {"tool": tool, "args": args or {}}
+
+        if client:
+            resp = await client.post(url, json=payload, timeout=TIMEOUT)
+        else:
+            async with httpx.AsyncClient() as new_client:
+                resp = await new_client.post(url, json=payload, timeout=TIMEOUT)
+
+        resp.raise_for_status()
+        result = resp.json()
+
+        if result.get("success"):
+            return result.get("result")
+        return {"error": result.get("error", "Unknown error")}
+    except Exception as e:
+        logger.error(f"Supabase MCP async error calling {tool}: {e}")
+        return {"error": str(e)}
+
+
+async def get_supabase_holdings_async(
+    portfolio_id: str,
+    client: "httpx.AsyncClient" = None,
+) -> Dict[str, Any]:
+    """Async version of get_supabase_holdings."""
+    return await _call_supabase_mcp_async(
+        "get_holdings_display",
+        {"portfolio_id": portfolio_id},
+        client,
+    )
+
+
+async def get_supabase_portfolio_summary_async(
+    portfolio_id: str,
+    client: "httpx.AsyncClient" = None,
+) -> Dict[str, Any]:
+    """Async version of get_supabase_portfolio_summary."""
+    return await _call_supabase_mcp_async(
+        "get_portfolio_summary",
+        {"portfolio_id": portfolio_id},
+        client,
+    )
+
+
+async def get_supabase_dashboard_async(
+    portfolio_id: str,
+    client: "httpx.AsyncClient" = None,
+) -> Dict[str, Any]:
+    """Async version of get_supabase_dashboard."""
+    return await _call_supabase_mcp_async(
+        "get_portfolio_dashboard",
+        {"portfolio_id": portfolio_id},
+        client,
+    )
+
+
+async def get_portfolio_with_ratings_async(portfolio_id: str) -> Dict[str, Any]:
+    """
+    Get portfolio data with country ratings - ALL IN PARALLEL.
+
+    This fires all requests simultaneously:
+    - Holdings from Supabase
+    - NFA ratings for each country
+    - Credit ratings for each country
+
+    Example speedup:
+        Sequential: 500ms + (10 countries × 200ms × 2 ratings) = 4.5 seconds
+        Parallel:   ~500ms total (all at once)
+    """
+    if not HTTPX_AVAILABLE:
+        # Fallback to sequential
+        holdings = get_supabase_holdings(portfolio_id)
+        if "error" in holdings:
+            return holdings
+        countries = list(set(h.get("country") for h in holdings.get("holdings", []) if h.get("country")))
+        ratings = {}
+        for c in countries:
+            ratings[c] = {
+                "nfa": get_nfa_rating(c),
+                "credit": get_credit_rating(c),
+            }
+        return {"holdings": holdings, "ratings": ratings}
+
+    async with httpx.AsyncClient() as client:
+        # Step 1: Get holdings
+        holdings = await get_supabase_holdings_async(portfolio_id, client)
+        if "error" in holdings:
+            return holdings
+
+        # Step 2: Extract unique countries
+        countries = list(set(
+            h.get("country") for h in holdings.get("holdings", [])
+            if h.get("country")
+        ))
+
+        # Step 3: Fire ALL rating requests in parallel
+        nfa_tasks = [get_nfa_rating_async(c, client=client) for c in countries]
+        credit_tasks = [get_credit_rating_async(c, client=client) for c in countries]
+
+        all_results = await asyncio.gather(
+            *nfa_tasks, *credit_tasks,
+            return_exceptions=True
+        )
+
+        # Split results
+        nfa_results = all_results[:len(countries)]
+        credit_results = all_results[len(countries):]
+
+        # Build ratings dict
+        ratings = {}
+        for i, country in enumerate(countries):
+            ratings[country] = {
+                "nfa": nfa_results[i] if not isinstance(nfa_results[i], Exception) else {"error": str(nfa_results[i])},
+                "credit": credit_results[i] if not isinstance(credit_results[i], Exception) else {"error": str(credit_results[i])},
+            }
+
+        return {
+            "portfolio_id": portfolio_id,
+            "holdings": holdings,
+            "ratings": ratings,
+        }
