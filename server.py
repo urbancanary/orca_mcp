@@ -100,8 +100,12 @@ from orca_mcp.tools.external_mcps import (
     get_worldbank_indicator,
     search_worldbank_indicators,
     get_worldbank_country_profile,
+    # Reasoning
+    call_reasoning,
+    analyze_data,
+    list_reasoning_skills,
 )
-from orca_mcp.tools.query_router import route_query, ORCA_QUERY_TOOL_DESCRIPTION
+from orca_mcp.tools.query_router import route_query, detect_complexity, ORCA_QUERY_TOOL_DESCRIPTION
 from orca_mcp.tools.cloudflare_d1 import get_watchlist, get_watchlist_complete
 from orca_mcp.tools.sovereign_reports import (
     list_available_countries as sovereign_list_countries,
@@ -1269,6 +1273,88 @@ async def list_tools() -> list[Tool]:
                 },
                 "required": ["countries"]
             }
+        ),
+        # ========== REASONING TOOLS ==========
+        Tool(
+            name="analyze",
+            description="Analyze data using AI reasoning. Provide portfolio data, query results, or other data and get intelligent analysis with reasoning trace.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "data": {
+                        "type": "object",
+                        "description": "The data to analyze (holdings, transactions, query results, etc.)"
+                    },
+                    "objective": {
+                        "type": "string",
+                        "description": "What kind of analysis to perform (e.g., 'identify risks', 'suggest optimizations', 'explain trends')"
+                    },
+                    "require_compliance": {
+                        "type": "boolean",
+                        "description": "If true, any suggestions will be checked for compliance",
+                        "default": False
+                    }
+                },
+                "required": ["data", "objective"]
+            }
+        ),
+        Tool(
+            name="reason",
+            description="Get AI-powered reasoning on a natural language query about portfolios, markets, or investments. Routes to specialized skills for trading, compliance, and more.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Natural language question or request"
+                    },
+                    "portfolio_context": {
+                        "type": "object",
+                        "description": "Optional portfolio data for context"
+                    },
+                    "require_compliance": {
+                        "type": "boolean",
+                        "description": "If true, suggestions pass compliance checks",
+                        "default": False
+                    }
+                },
+                "required": ["query"]
+            }
+        ),
+        Tool(
+            name="list_reasoning_skills",
+            description="List available reasoning skills (trading, compliance, charting, etc.)",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        ),
+        Tool(
+            name="complex_query",
+            description="""Handle complex multi-step queries that require data fetching, filtering, and analysis.
+
+Use this for queries like:
+- "Credit summary for our top 2 holdings"
+- "Analyze risk exposure across all EM positions"
+- "Compare yields of our highest rated bonds"
+- "Which holdings have the worst credit outlook?"
+
+This tool decomposes complex requests into sub-queries, fetches the required data, and synthesizes a comprehensive response.""",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The complex natural language query"
+                    },
+                    "portfolio_id": {
+                        "type": "string",
+                        "description": "Optional portfolio to focus on"
+                    }
+                },
+                "required": ["query"]
+            }
         )
     ]
 
@@ -1285,6 +1371,190 @@ async def list_tools() -> list[Tool]:
         return True
 
     return [tool for tool in all_tools if is_tool_visible(tool.name)]
+
+
+# ============================================================================
+# COMPLEX QUERY HANDLER - Multi-step reasoning orchestration
+# ============================================================================
+
+async def handle_complex_query(query: str, portfolio_id: str = None, client_id: str = None) -> Dict[str, Any]:
+    """
+    Handle complex multi-step queries using reasoning MCP for decomposition and synthesis.
+
+    Flow:
+    1. Analyze query complexity
+    2. Call reasoning MCP to decompose into sub-queries
+    3. Execute sub-queries (data fetching)
+    4. Call reasoning MCP to synthesize results
+    5. Return combined analysis
+
+    Args:
+        query: The complex natural language query
+        portfolio_id: Optional portfolio to focus on
+        client_id: Optional client ID for data access
+
+    Returns:
+        {
+            "query": original query,
+            "complexity": complexity analysis,
+            "steps": list of executed steps,
+            "data": fetched data,
+            "analysis": synthesized analysis,
+            "summary": human-readable summary
+        }
+    """
+    import asyncio
+
+    result = {
+        "query": query,
+        "steps": [],
+        "data": {},
+        "analysis": None,
+        "summary": None
+    }
+
+    try:
+        # Step 1: Analyze complexity
+        complexity = detect_complexity(query)
+        result["complexity"] = complexity
+        result["steps"].append({
+            "step": 1,
+            "action": "complexity_analysis",
+            "result": complexity
+        })
+
+        # Step 2: Decompose query using reasoning MCP
+        decomposition_prompt = f"""Decompose this financial query into executable sub-queries.
+
+Query: "{query}"
+{f'Portfolio: {portfolio_id}' if portfolio_id else ''}
+
+Available data sources:
+- get_client_holdings: Get portfolio holdings (returns ticker, country, weight, value, rating)
+- get_credit_rating: Get S&P/Moody's credit rating for a country
+- get_nfa_rating: Get NFA star rating (1-7) for a country
+- get_portfolio_cash: Get cash positions
+- get_compliance_status: Check UCITS compliance
+
+Return a JSON object with:
+{{
+    "intent": "what the user wants to know",
+    "sub_queries": [
+        {{"tool": "tool_name", "args": {{}}, "purpose": "why this is needed"}}
+    ],
+    "synthesis_approach": "how to combine the results"
+}}"""
+
+        decomposition = call_reasoning(decomposition_prompt, require_compliance=False)
+        result["steps"].append({
+            "step": 2,
+            "action": "decomposition",
+            "result": decomposition
+        })
+
+        # Step 3: Execute sub-queries
+        # For now, we'll execute common patterns directly
+        # In production, we'd parse the decomposition and call tools dynamically
+
+        # Common pattern: Get holdings first
+        from orca_mcp.tools.data_access import get_client_holdings, get_portfolio_cash
+
+        holdings_data = get_client_holdings(client_id=client_id, portfolio_id=portfolio_id)
+        result["data"]["holdings"] = holdings_data
+        result["steps"].append({
+            "step": 3,
+            "action": "fetch_holdings",
+            "result": f"Fetched {len(holdings_data.get('holdings', []))} holdings"
+        })
+
+        # If query mentions "top N", filter to top N by weight
+        import re
+        top_match = re.search(r'\b(top|largest|biggest)\s+(\d+)', query.lower())
+        if top_match:
+            n = int(top_match.group(2))
+            holdings = holdings_data.get("holdings", [])
+            # Sort by weight descending and take top N
+            sorted_holdings = sorted(holdings, key=lambda x: float(x.get("weight", 0)), reverse=True)
+            top_holdings = sorted_holdings[:n]
+            result["data"]["top_holdings"] = top_holdings
+            result["steps"].append({
+                "step": 4,
+                "action": "filter_top_n",
+                "result": f"Filtered to top {n} holdings"
+            })
+
+            # Get credit ratings for top holdings
+            countries = list(set(h.get("country") for h in top_holdings if h.get("country")))
+            from orca_mcp.tools.external_mcps import get_credit_rating, get_nfa_rating
+
+            credit_data = {}
+            for country in countries:
+                try:
+                    credit_data[country] = {
+                        "credit_rating": get_credit_rating(country),
+                        "nfa_rating": get_nfa_rating(country)
+                    }
+                except Exception as e:
+                    credit_data[country] = {"error": str(e)}
+
+            result["data"]["credit_ratings"] = credit_data
+            result["steps"].append({
+                "step": 5,
+                "action": "fetch_credit_ratings",
+                "result": f"Fetched ratings for {len(countries)} countries"
+            })
+
+        # Step 4: Synthesize results using reasoning MCP
+        synthesis_prompt = f"""Analyze this portfolio data and provide a clear summary.
+
+Original query: "{query}"
+
+Data collected:
+{json.dumps(result["data"], indent=2, default=str)}
+
+Provide:
+1. A concise answer to the user's query
+2. Key insights from the data
+3. Any risks or concerns to note
+
+Format your response as a clear, readable summary."""
+
+        synthesis = call_reasoning(synthesis_prompt, require_compliance=False)
+        result["analysis"] = synthesis
+        result["steps"].append({
+            "step": 6,
+            "action": "synthesis",
+            "result": "Generated analysis"
+        })
+
+        # Extract summary from reasoning response
+        if synthesis.get("response"):
+            result["summary"] = synthesis["response"]
+        elif synthesis.get("error"):
+            result["summary"] = f"Analysis unavailable: {synthesis['error']}"
+        else:
+            # Generate a basic summary from the data
+            if "top_holdings" in result["data"]:
+                holdings = result["data"]["top_holdings"]
+                summary_parts = []
+                for h in holdings:
+                    ticker = h.get("ticker", "Unknown")
+                    country = h.get("country", "Unknown")
+                    weight = h.get("weight", 0)
+                    credit_info = result["data"].get("credit_ratings", {}).get(country, {})
+                    rating = credit_info.get("credit_rating", {}).get("rating", "N/A")
+                    summary_parts.append(f"- {ticker} ({country}): {weight:.1f}% weight, {rating} rating")
+                result["summary"] = "Top holdings:\n" + "\n".join(summary_parts)
+            else:
+                result["summary"] = "Query processed successfully. See data for details."
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Complex query error: {e}", exc_info=True)
+        result["error"] = str(e)
+        result["summary"] = f"Error processing query: {e}"
+        return result
 
 
 @server.call_tool()
@@ -1317,6 +1587,20 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
 
             # Route the query using Haiku
             routing_result = await route_query(query)
+
+            # Check if this is a complex query that needs multi-step reasoning
+            complexity = routing_result.get("complexity", {})
+            if complexity.get("is_complex") and complexity.get("confidence", 0) >= 0.7:
+                logger.info(f"Complex query detected: {complexity.get('patterns_matched')} - routing to complex_query handler")
+                result = await handle_complex_query(
+                    query=query,
+                    portfolio_id=arguments.get("portfolio_id"),
+                    client_id=client_id
+                )
+                return [TextContent(
+                    type="text",
+                    text=json.dumps(result, indent=2, default=str)
+                )]
 
             # Check for clarification needed
             if routing_result.get("tool") is None:
@@ -3107,6 +3391,33 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             countries = arguments["countries"]
             result = get_sovereign_comparison(countries)
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        # ========== REASONING TOOLS ==========
+        elif name == "analyze":
+            data = arguments["data"]
+            objective = arguments["objective"]
+            require_compliance = arguments.get("require_compliance", False)
+            result = analyze_data(data, objective, require_compliance)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "reason":
+            query = arguments["query"]
+            portfolio_context = arguments.get("portfolio_context")
+            require_compliance = arguments.get("require_compliance", False)
+            result = call_reasoning(query, portfolio_context, require_compliance)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "list_reasoning_skills":
+            result = list_reasoning_skills()
+            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+        elif name == "complex_query":
+            result = await handle_complex_query(
+                query=arguments["query"],
+                portfolio_id=arguments.get("portfolio_id"),
+                client_id=client_id
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         else:
             return [TextContent(

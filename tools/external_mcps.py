@@ -66,6 +66,7 @@ MCP_URLS = {
     "sovereign_classification": "https://sovereign-classification-mcp.urbancanary.workers.dev",
     "imf": "https://imf-mcp.urbancanary.workers.dev",
     "worldbank": "https://worldbank-mcp.urbancanary.workers.dev",
+    "reasoning": os.environ.get("REASONING_MCP_URL", "https://reasoning-mcp-production-537b.up.railway.app"),
 }
 
 # Lazy-loaded URL (fetched from auth_mcp on first use)
@@ -740,6 +741,86 @@ def get_worldbank_country_profile(country: str) -> Dict[str, Any]:
 
 
 # ============================================================================
+# Reasoning MCP - AI-powered analysis and reasoning
+# ============================================================================
+
+def call_reasoning(
+    query: str,
+    portfolio_context: Optional[Dict[str, Any]] = None,
+    require_compliance: bool = False
+) -> Dict[str, Any]:
+    """
+    Call the reasoning MCP for AI-powered analysis.
+
+    Args:
+        query: Natural language query or analysis request
+        portfolio_context: Optional portfolio data to analyze
+        require_compliance: If True, suggestions pass compliance checks
+
+    Returns:
+        {
+            "allowed": bool,
+            "response": str,
+            "reasoning_trace": [...],
+            "skill_used": str,
+            "data": {...} (if applicable)
+        }
+    """
+    try:
+        url = f"{MCP_URLS['reasoning']}/api/reason"
+        payload = {
+            "query": query,
+            "require_compliance": require_compliance
+        }
+        if portfolio_context:
+            payload["portfolio_context"] = json.dumps(portfolio_context)
+
+        response = _post(url, json_data=payload, timeout=60)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"Reasoning MCP error: {e}")
+        return {"error": str(e), "allowed": False}
+
+
+def list_reasoning_skills() -> List[Dict[str, str]]:
+    """
+    List available reasoning skills.
+
+    Returns:
+        List of {name, description, triggers} for each skill
+    """
+    try:
+        url = f"{MCP_URLS['reasoning']}/api/skills"
+        response = _get(url)
+        response.raise_for_status()
+        return response.json().get("skills", [])
+    except Exception as e:
+        logger.error(f"Reasoning MCP skills error: {e}")
+        return [{"error": str(e)}]
+
+
+def analyze_data(
+    data: Any,
+    objective: str,
+    require_compliance: bool = False
+) -> Dict[str, Any]:
+    """
+    Analyze data using the reasoning MCP.
+
+    Args:
+        data: The data to analyze (holdings, transactions, etc.)
+        objective: What kind of analysis to perform
+        require_compliance: If True, suggestions pass compliance checks
+
+    Returns:
+        Analysis results with reasoning trace
+    """
+    query = f"{objective}\n\nData to analyze:\n{json.dumps(data, indent=2, default=str)}"
+    return call_reasoning(query, require_compliance=require_compliance)
+
+
+# ============================================================================
 # ASYNC VERSIONS - Use httpx for concurrent API calls
 # These provide 7-18x speedup when calling multiple APIs in parallel
 # ============================================================================
@@ -1384,3 +1465,59 @@ async def get_portfolio_with_ratings_async(portfolio_id: str) -> Dict[str, Any]:
             "holdings": holdings,
             "ratings": ratings,
         }
+
+
+# ============================================================================
+# Reasoning MCP ASYNC
+# ============================================================================
+
+async def call_reasoning_async(
+    query: str,
+    portfolio_context: Optional[Dict[str, Any]] = None,
+    require_compliance: bool = False,
+    client: "httpx.AsyncClient" = None
+) -> Dict[str, Any]:
+    """
+    Async version of call_reasoning.
+
+    Args:
+        query: Natural language query or analysis request
+        portfolio_context: Optional portfolio data to analyze
+        require_compliance: If True, suggestions pass compliance checks
+        client: Optional httpx.AsyncClient for connection pooling
+    """
+    if not HTTPX_AVAILABLE:
+        return call_reasoning(query, portfolio_context, require_compliance)
+
+    url = f"{MCP_URLS['reasoning']}/api/reason"
+    payload = {
+        "query": query,
+        "require_compliance": require_compliance
+    }
+    if portfolio_context:
+        payload["portfolio_context"] = json.dumps(portfolio_context)
+
+    if client:
+        return await _async_post(client, url, json_data=payload, timeout=60)
+    else:
+        async with httpx.AsyncClient() as new_client:
+            return await _async_post(new_client, url, json_data=payload, timeout=60)
+
+
+async def analyze_data_async(
+    data: Any,
+    objective: str,
+    require_compliance: bool = False,
+    client: "httpx.AsyncClient" = None
+) -> Dict[str, Any]:
+    """
+    Async version of analyze_data.
+
+    Args:
+        data: The data to analyze
+        objective: What kind of analysis to perform
+        require_compliance: If True, suggestions pass compliance checks
+        client: Optional httpx.AsyncClient for connection pooling
+    """
+    query = f"{objective}\n\nData to analyze:\n{json.dumps(data, indent=2, default=str)}"
+    return await call_reasoning_async(query, require_compliance=require_compliance, client=client)

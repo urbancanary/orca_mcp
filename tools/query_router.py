@@ -249,6 +249,79 @@ If context mentions "portfolio GA10": "show holdings" -> {{"tool": "get_client_h
 USER QUERY: {query}
 """
 
+# ============================================================================
+# COMPLEXITY DETECTION - Identify queries that need multi-step reasoning
+# ============================================================================
+
+# Patterns that indicate a query needs multiple steps
+MULTI_STEP_PATTERNS = [
+    # Superlative + data type (need to fetch, filter, then analyze)
+    (r'\b(top|bottom|best|worst|largest|smallest|highest|lowest)\s+(\d+|few|several)', 'ranking'),
+    # Summary/analysis requests (need data + synthesis)
+    (r'\b(summary|summarize|analyze|analysis|overview|breakdown|explain)\b', 'synthesis'),
+    # Comparison with implicit data fetch
+    (r'\b(compare|comparison|versus|vs\.?|difference between)\b.*\b(holdings|portfolio|positions)', 'comparison'),
+    # Multi-entity analysis
+    (r'\b(all|each|every)\s+(country|holding|position|bond).*\b(rating|credit|risk)', 'batch_analysis'),
+    # Conditional/filtered analysis
+    (r'\b(which|what)\s+(holdings?|bonds?|positions?).*\b(have|are|with)\b', 'filtered_query'),
+    # Risk/credit assessment of portfolio
+    (r'\b(credit|risk)\s+(summary|profile|assessment|exposure)\b.*\b(portfolio|holdings)', 'risk_analysis'),
+    # Time-based comparisons
+    (r'\b(changed?|trend|over time|historical)\b.*\b(portfolio|holdings|positions)', 'temporal'),
+    # Multi-attribute queries
+    (r'\bshow\b.*\b(and|with)\b.*\b(and|with)\b', 'multi_attribute'),
+]
+
+# Compile patterns for efficiency
+import re
+COMPILED_PATTERNS = [(re.compile(pattern, re.IGNORECASE), category) for pattern, category in MULTI_STEP_PATTERNS]
+
+
+def detect_complexity(query: str) -> Dict[str, Any]:
+    """
+    Detect if a query requires multi-step reasoning.
+
+    Returns:
+        {
+            "is_complex": bool,
+            "patterns_matched": list of pattern categories,
+            "confidence": float (0-1),
+            "suggested_approach": str
+        }
+    """
+    query_lower = query.lower()
+    matched_patterns = []
+
+    for pattern, category in COMPILED_PATTERNS:
+        if pattern.search(query):
+            matched_patterns.append(category)
+
+    # Calculate complexity score
+    is_complex = len(matched_patterns) >= 1
+    confidence = min(0.95, 0.5 + (len(matched_patterns) * 0.15))
+
+    # Determine suggested approach
+    if not is_complex:
+        approach = "single_tool"
+    elif "ranking" in matched_patterns or "filtered_query" in matched_patterns:
+        approach = "fetch_filter_analyze"
+    elif "synthesis" in matched_patterns or "risk_analysis" in matched_patterns:
+        approach = "fetch_synthesize"
+    elif "comparison" in matched_patterns:
+        approach = "multi_fetch_compare"
+    elif "batch_analysis" in matched_patterns:
+        approach = "batch_fetch_aggregate"
+    else:
+        approach = "decompose_execute_synthesize"
+
+    return {
+        "is_complex": is_complex,
+        "patterns_matched": matched_patterns,
+        "confidence": confidence,
+        "suggested_approach": approach
+    }
+
 
 async def route_query(query: str, context: str = "", model_override: str = None) -> Dict[str, Any]:
     """
@@ -331,7 +404,11 @@ async def route_query(query: str, context: str = "", model_override: str = None)
         # Add model info to result
         result["model_used"] = model_used
 
-        logger.info(f"Router [{model_used}]: '{query}' -> {result.get('tool')} (confidence: {result.get('confidence', 'N/A')})")
+        # Add complexity detection
+        complexity = detect_complexity(query)
+        result["complexity"] = complexity
+
+        logger.info(f"Router [{model_used}]: '{query}' -> {result.get('tool')} (confidence: {result.get('confidence', 'N/A')}, complex: {complexity['is_complex']})")
 
         return result
 

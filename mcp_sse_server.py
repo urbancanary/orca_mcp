@@ -132,6 +132,8 @@ def get_holdings_summary_from_d1(portfolio_id: str = 'wnbf', staging_id: int = 1
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any
 from mcp.server import Server
@@ -1601,6 +1603,15 @@ app = FastAPI(
     redoc_url="/redoc",    # ReDoc at /redoc
 )
 
+# Enable CORS for browser access (Orion UI)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins for local development
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # Create SSE transport for MCP
 sse = SseServerTransport("/messages/")
 
@@ -1711,6 +1722,12 @@ async def handle_sse(request: Request):
 
 # Mount SSE message handler for MCP protocol
 app.mount("/messages/", app=sse.handle_post_message)
+
+# Mount Orion UI static files at /ui to avoid route conflicts
+ORION_UI_PATH = Path(__file__).parent.parent / "orion_v2"
+if ORION_UI_PATH.exists():
+    app.mount("/ui", StaticFiles(directory=str(ORION_UI_PATH), html=True), name="orion-ui")
+    logger.info(f"Orion UI mounted at /ui from: {ORION_UI_PATH}")
 
 
 if __name__ == "__main__":
