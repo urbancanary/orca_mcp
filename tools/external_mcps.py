@@ -1621,3 +1621,326 @@ async def analyze_data_async(
     """
     query = f"{objective}\n\nData to analyze:\n{json.dumps(data, indent=2, default=str)}"
     return await call_reasoning_async(query, require_compliance=require_compliance, client=client)
+
+
+# ============================================================================
+# Funds MCP - Fund Prospectus & Application Management
+# ============================================================================
+
+def _get_funds_mcp_url() -> str:
+    """Get Funds MCP URL from auth_mcp or environment."""
+    if AUTH_CLIENT_AVAILABLE and get_api_key:
+        url = get_api_key("FUNDS_MCP_URL", fallback_env=False, requester="orca-mcp")
+        if url:
+            return url
+    return os.environ.get("FUNDS_MCP_URL", "http://localhost:8002")
+
+
+# Lazy-loaded URL
+_funds_mcp_url_cache = None
+
+
+def _get_funds_url() -> str:
+    """Get cached Funds MCP URL."""
+    global _funds_mcp_url_cache
+    if _funds_mcp_url_cache is None:
+        _funds_mcp_url_cache = _get_funds_mcp_url()
+        logger.info(f"Funds MCP URL: {_funds_mcp_url_cache}")
+    return _funds_mcp_url_cache
+
+
+def _call_funds_mcp(tool: str, args: Dict[str, Any] = None) -> Dict[str, Any]:
+    """
+    Call a Funds MCP tool.
+
+    Args:
+        tool: Tool name (e.g., 'list_form_templates', 'start_form_session')
+        args: Tool arguments
+
+    Returns:
+        Tool result or error dict
+    """
+    try:
+        url = f"{_get_funds_url()}/mcp/tools/call"
+        payload = {"name": tool, "arguments": args or {}}
+        response = _post(url, json_data=payload)
+        response.raise_for_status()
+        result = response.json()
+
+        # Parse MCP content format
+        if "content" in result and result["content"]:
+            text_content = result["content"][0].get("text", "")
+            try:
+                return json.loads(text_content)
+            except json.JSONDecodeError:
+                return {"text": text_content}
+
+        return result
+    except Exception as e:
+        logger.error(f"Funds MCP error calling {tool}: {e}")
+        return {"error": str(e)}
+
+
+def list_fund_templates() -> Dict[str, Any]:
+    """
+    List available fund prospectus templates.
+
+    Returns:
+        List of templates with template_id, name, description, field_count
+    """
+    return _call_funds_mcp("list_form_templates")
+
+
+def get_fund_template_fields(template_id: str) -> Dict[str, Any]:
+    """
+    Get detailed field information for a fund template.
+
+    Args:
+        template_id: The template identifier
+
+    Returns:
+        Template details with fields, their types, and requirements
+    """
+    return _call_funds_mcp("get_form_fields", {"template_id": template_id})
+
+
+def start_fund_application(template_id: str) -> Dict[str, Any]:
+    """
+    Start a new fund application session.
+
+    Args:
+        template_id: The fund template to use
+
+    Returns:
+        Session info with session_id, first field to fill, progress
+    """
+    return _call_funds_mcp("start_form_session", {"template_id": template_id})
+
+
+def submit_fund_answer(session_id: str, field_id: str, value: str) -> Dict[str, Any]:
+    """
+    Submit an answer to a fund application field.
+
+    Args:
+        session_id: The active session ID
+        field_id: The field being answered
+        value: The answer value
+
+    Returns:
+        Validation result, next field, updated progress
+    """
+    return _call_funds_mcp("answer_form_question", {
+        "session_id": session_id,
+        "field_id": field_id,
+        "value": value
+    })
+
+
+def get_fund_session_status(session_id: str) -> Dict[str, Any]:
+    """
+    Get current status of a fund application session.
+
+    Args:
+        session_id: The session to check
+
+    Returns:
+        Session status, collected values, remaining fields, progress
+    """
+    return _call_funds_mcp("get_session_status", {"session_id": session_id})
+
+
+def review_fund_application(session_id: str) -> Dict[str, Any]:
+    """
+    Review all answers before submitting a fund application.
+
+    Args:
+        session_id: The session to review
+
+    Returns:
+        All collected values organized by section
+    """
+    return _call_funds_mcp("review_form", {"session_id": session_id})
+
+
+def generate_fund_pdf(session_id: str, flatten: bool = True) -> Dict[str, Any]:
+    """
+    Generate a filled PDF for a fund application.
+
+    Args:
+        session_id: The completed session
+        flatten: If True, make PDF fields non-editable
+
+    Returns:
+        Path to generated PDF, base64 content if requested
+    """
+    return _call_funds_mcp("generate_filled_pdf", {
+        "session_id": session_id,
+        "flatten": flatten
+    })
+
+
+def send_fund_for_signature(
+    session_id: str,
+    signer_email: str,
+    signer_name: str
+) -> Dict[str, Any]:
+    """
+    Send a fund application for electronic signature via DocuSign.
+
+    Args:
+        session_id: The session with completed form
+        signer_email: Email of the person signing
+        signer_name: Name of the signer
+
+    Returns:
+        DocuSign envelope_id, signing_url, status
+    """
+    return _call_funds_mcp("send_for_signature", {
+        "session_id": session_id,
+        "signer_email": signer_email,
+        "signer_name": signer_name
+    })
+
+
+def check_fund_signature_status(session_id: str) -> Dict[str, Any]:
+    """
+    Check the signature status of a fund application.
+
+    Args:
+        session_id: The session to check
+
+    Returns:
+        Signature status (pending, signed, declined), timestamps
+    """
+    return _call_funds_mcp("check_signature_status", {"session_id": session_id})
+
+
+def send_fund_application_email(
+    session_id: str,
+    recipient_email: str,
+    cc_emails: List[str] = None,
+    subject: str = None
+) -> Dict[str, Any]:
+    """
+    Email the completed fund application.
+
+    Args:
+        session_id: The session with completed/signed form
+        recipient_email: Primary recipient
+        cc_emails: Optional CC recipients
+        subject: Optional custom subject line
+
+    Returns:
+        Email send status, message_id
+    """
+    args = {
+        "session_id": session_id,
+        "recipient_email": recipient_email
+    }
+    if cc_emails:
+        args["cc_emails"] = cc_emails
+    if subject:
+        args["subject"] = subject
+
+    return _call_funds_mcp("send_completed_form", args)
+
+
+def list_fund_sessions(status: str = None) -> Dict[str, Any]:
+    """
+    List fund application sessions.
+
+    Args:
+        status: Optional filter (started, in_progress, fields_complete,
+                pending_signature, signed, submitted)
+
+    Returns:
+        List of sessions with their current status
+    """
+    args = {}
+    if status:
+        args["status"] = status
+    return _call_funds_mcp("list_sessions", args)
+
+
+# ============================================================================
+# Funds MCP - ASYNC VERSIONS
+# ============================================================================
+
+async def _call_funds_mcp_async(
+    tool: str,
+    args: Dict[str, Any] = None,
+    client: "httpx.AsyncClient" = None,
+) -> Dict[str, Any]:
+    """Async version of _call_funds_mcp."""
+    if not HTTPX_AVAILABLE:
+        return _call_funds_mcp(tool, args)
+
+    try:
+        url = f"{_get_funds_url()}/mcp/tools/call"
+        payload = {"name": tool, "arguments": args or {}}
+
+        if client:
+            resp = await client.post(url, json=payload, headers=_get_auth_headers(), timeout=TIMEOUT)
+        else:
+            async with httpx.AsyncClient() as new_client:
+                resp = await new_client.post(url, json=payload, headers=_get_auth_headers(), timeout=TIMEOUT)
+
+        resp.raise_for_status()
+        result = resp.json()
+
+        if "content" in result and result["content"]:
+            text_content = result["content"][0].get("text", "")
+            try:
+                return json.loads(text_content)
+            except json.JSONDecodeError:
+                return {"text": text_content}
+
+        return result
+    except Exception as e:
+        logger.error(f"Funds MCP async error calling {tool}: {e}")
+        return {"error": str(e)}
+
+
+async def list_fund_templates_async(
+    client: "httpx.AsyncClient" = None
+) -> Dict[str, Any]:
+    """Async version of list_fund_templates."""
+    return await _call_funds_mcp_async("list_form_templates", client=client)
+
+
+async def start_fund_application_async(
+    template_id: str,
+    client: "httpx.AsyncClient" = None
+) -> Dict[str, Any]:
+    """Async version of start_fund_application."""
+    return await _call_funds_mcp_async(
+        "start_form_session",
+        {"template_id": template_id},
+        client
+    )
+
+
+async def submit_fund_answer_async(
+    session_id: str,
+    field_id: str,
+    value: str,
+    client: "httpx.AsyncClient" = None
+) -> Dict[str, Any]:
+    """Async version of submit_fund_answer."""
+    return await _call_funds_mcp_async(
+        "answer_form_question",
+        {"session_id": session_id, "field_id": field_id, "value": value},
+        client
+    )
+
+
+async def get_fund_session_status_async(
+    session_id: str,
+    client: "httpx.AsyncClient" = None
+) -> Dict[str, Any]:
+    """Async version of get_fund_session_status."""
+    return await _call_funds_mcp_async(
+        "get_session_status",
+        {"session_id": session_id},
+        client
+    )

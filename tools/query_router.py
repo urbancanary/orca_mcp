@@ -84,6 +84,13 @@ Given a user query and optional conversation context, determine which internal t
 - "credit rating" or "S&P/Moody's/Fitch" → get_credit_rating (traditional letter ratings)
 - "ratings for multiple countries" → get_nfa_batch or get_credit_ratings_batch
 
+### Sovereign Credit Report Queries
+- "credit report", "sovereign report", "full report" → get_sovereign_report (detailed country analysis)
+- "country analysis", "country outlook", "economic analysis" → get_sovereign_report
+- Specific sections: "banking sector", "political risk", "outlook" → get_sovereign_section with appropriate section
+- "compare country reports" → use get_sovereign_report for each country
+- "search reports for [term]" → search_sovereign_reports
+
 ### Economic Data Queries
 - Country + economic indicator → get_imf_indicator (default for international data)
 - "US" or "United States" + economic term → get_fred_series (FRED is authoritative for US)
@@ -190,6 +197,12 @@ Given a user query and optional conversation context, determine which internal t
 37. standardize_country(country) - Normalize country name to standard form
 38. get_country_info(country) - Country details (ISO codes, region, etc.)
 
+## Sovereign Credit Reports (Full Analysis)
+45. get_sovereign_report(country) - Full sovereign credit report with ratings, economics, political analysis, risks
+46. get_sovereign_section(country, section) - Specific section: summary, ratings, economic, fiscal, external, political, banking, outlook, strengths, vulnerabilities
+47. list_sovereign_countries() - List all available sovereign credit reports
+48. search_sovereign_reports(query, max_results?) - Search across all reports for keyword/phrase
+
 ## Display-Ready Endpoints (for thin frontends - all values include _fmt versions)
 39. get_holdings_display(portfolio_id?) - Holdings with ALL display columns and formatted values. Use for Holdings page.
 40. get_portfolio_dashboard(portfolio_id?) - Single call for Portfolio/Summary page: stats, allocations, compliance summary.
@@ -225,6 +238,14 @@ If the query is ambiguous or you need more information:
 - "check if I can buy Brazil at 500k" -> {{"tool": "check_trade_compliance", "args": {{"ticker": "BRAZIL", "country": "Brazil", "action": "buy", "market_value": 500000}}, "confidence": 0.90}}
 - "upcoming cashflows" -> {{"tool": "get_cashflows_display", "args": {{}}, "confidence": 0.95}}
 - "show me coupon schedule" -> {{"tool": "get_cashflows_display", "args": {{}}, "confidence": 0.92}}
+
+### Sovereign Credit Report Examples
+- "Brazil credit report" -> {{"tool": "get_sovereign_report", "args": {{"country": "Brazil"}}, "confidence": 0.95}}
+- "get me the sovereign report for Indonesia" -> {{"tool": "get_sovereign_report", "args": {{"country": "Indonesia"}}, "confidence": 0.98}}
+- "show political section for Turkey" -> {{"tool": "get_sovereign_section", "args": {{"country": "Turkey", "section": "political"}}, "confidence": 0.95}}
+- "what countries have reports?" -> {{"tool": "list_sovereign_countries", "args": {{}}, "confidence": 0.95}}
+- "search reports for banking crisis" -> {{"tool": "search_sovereign_reports", "args": {{"query": "banking crisis"}}, "confidence": 0.92}}
+- "outlook for Hungary" -> {{"tool": "get_sovereign_section", "args": {{"country": "Hungary", "section": "outlook"}}, "confidence": 0.90}}
 
 ### Disambiguation Examples (apply rules)
 - "Colombia" -> {{"tool": "get_nfa_rating", "args": {{"country": "Colombia"}}, "confidence": 0.90}}

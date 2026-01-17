@@ -82,6 +82,12 @@ ENABLED_TOOLS = {
     "get_portfolio_with_ratings",    # Holdings + NFA + credit ratings in parallel
     "get_supabase_holdings",         # Holdings from Supabase
     "get_supabase_dashboard",        # Dashboard from Supabase
+
+    # Phase 10: Sovereign Credit Reports
+    "get_sovereign_report",          # Full sovereign credit report
+    "get_sovereign_section",         # Specific section from report (ratings, outlook, etc.)
+    "list_sovereign_countries",      # List all available reports
+    "search_sovereign_reports",      # Search across reports
 }
 
 # Add current directory to path for imports
@@ -221,6 +227,12 @@ try:
         remove_from_supabase_watchlist,
         get_portfolio_with_ratings_async,
     )
+    from tools.sovereign_reports import (
+        get_sovereign_report,
+        get_sovereign_section,
+        list_available_countries as list_sovereign_countries,
+        search_sovereign_reports,
+    )
     from client_config import get_client_config
 except ImportError:
     from orca_mcp.tools.data_access import query_bigquery
@@ -294,6 +306,12 @@ except ImportError:
         add_to_supabase_watchlist,
         remove_from_supabase_watchlist,
         get_portfolio_with_ratings_async,
+    )
+    from orca_mcp.tools.sovereign_reports import (
+        get_sovereign_report,
+        get_sovereign_section,
+        list_available_countries as list_sovereign_countries,
+        search_sovereign_reports,
     )
     from orca_mcp.client_config import get_client_config
 
@@ -978,6 +996,54 @@ INTERNAL_TOOLS = [
                 "required": ["portfolio_id"]
             }
         ),
+
+        # ============================================================================
+        # SOVEREIGN CREDIT REPORTS
+        # ============================================================================
+        Tool(
+            name="get_sovereign_report",
+            description="Get a full sovereign credit report for a country. Returns comprehensive analysis including ratings, economic outlook, political assessment, and credit risks.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "country": {"type": "string", "description": "Country name (e.g., 'Brazil', 'Indonesia', 'Hungary')"}
+                },
+                "required": ["country"]
+            }
+        ),
+        Tool(
+            name="get_sovereign_section",
+            description="Get a specific section from a sovereign credit report. Sections: summary, ratings, economic, fiscal, external, political, banking, outlook, strengths, vulnerabilities.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "country": {"type": "string", "description": "Country name"},
+                    "section": {"type": "string", "description": "Section name", "enum": ["summary", "ratings", "economic", "fiscal", "external", "political", "banking", "outlook", "strengths", "vulnerabilities"]}
+                },
+                "required": ["country", "section"]
+            }
+        ),
+        Tool(
+            name="list_sovereign_countries",
+            description="List all available sovereign credit reports. Returns country names and report availability.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        ),
+        Tool(
+            name="search_sovereign_reports",
+            description="Search across all sovereign credit reports for a keyword or phrase. Finds matches with context.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search term or phrase"},
+                    "max_results": {"type": "integer", "description": "Max results per country (default 5)"}
+                },
+                "required": ["query"]
+            }
+        ),
     ]
 
 
@@ -1584,6 +1650,30 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "get_supabase_dashboard":
             portfolio_id = arguments.get("portfolio_id", "wnbf")
             result = await get_supabase_dashboard_async(portfolio_id)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        # ============================================================================
+        # SOVEREIGN CREDIT REPORTS
+        # ============================================================================
+        elif name == "get_sovereign_report":
+            country = arguments.get("country")
+            result = get_sovereign_report(country)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "get_sovereign_section":
+            country = arguments.get("country")
+            section = arguments.get("section")
+            result = get_sovereign_section(country, section)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "list_sovereign_countries":
+            result = list_sovereign_countries()
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "search_sovereign_reports":
+            query = arguments.get("query")
+            max_results = arguments.get("max_results", 5)
+            result = search_sovereign_reports(query, max_results)
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         else:
