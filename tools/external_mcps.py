@@ -10,6 +10,7 @@ These tools provide access to external MCP services via HTTP:
 - IMF MCP: IMF economic indicators (with AI analysis)
 - World Bank MCP: World Bank development indicators
 - Supabase MCP: Portfolio data gateway (holdings, transactions, watchlist)
+- Sov-Quasi Reports MCP: Track pending sovereign/quasi-sovereign reports
 
 Authentication:
 - Cloudflare Workers: Self-validating tokens (no secrets needed)
@@ -67,6 +68,7 @@ MCP_URLS = {
     "imf": "https://imf-mcp.urbancanary.workers.dev",
     "worldbank": "https://worldbank-mcp.urbancanary.workers.dev",
     "reasoning": os.environ.get("REASONING_MCP_URL", "https://reasoning-mcp-production-537b.up.railway.app"),
+    "sov_quasi": os.environ.get("SOV_QUASI_MCP_URL", "https://sov-quasi-list-production.up.railway.app"),
 }
 
 # Lazy-loaded URL (fetched from auth_mcp on first use)
@@ -818,6 +820,104 @@ def analyze_data(
     """
     query = f"{objective}\n\nData to analyze:\n{json.dumps(data, indent=2, default=str)}"
     return call_reasoning(query, require_compliance=require_compliance)
+
+
+# ============================================================================
+# Sov-Quasi Reports MCP - Sovereign & Quasi-Sovereign Report Tracking
+# ============================================================================
+
+def get_sov_quasi_reports(
+    report_type: Optional[str] = None,
+    status: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Get list of sovereign/quasi-sovereign reports.
+
+    Args:
+        report_type: Filter by type ('sovereign' or 'quasi-sovereign')
+        status: Filter by status ('pending', 'in-progress', 'completed')
+
+    Returns:
+        List of reports with id, name, type, status, description, attachments
+    """
+    try:
+        url = f"{MCP_URLS['sov_quasi']}/api/reports"
+        params = {}
+        if report_type:
+            params["type"] = report_type
+        if status:
+            params["status"] = status
+
+        response = _get(url, params=params)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"Sov-Quasi MCP error: {e}")
+        return [{"error": str(e)}]
+
+
+def add_sov_quasi_report(
+    name: str,
+    report_type: str,
+    status: str = "pending",
+    description: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Add a new sovereign/quasi-sovereign report.
+
+    Args:
+        name: Report name (e.g., country or entity name)
+        report_type: 'sovereign' or 'quasi-sovereign'
+        status: 'pending', 'in-progress', or 'completed'
+        description: Optional description
+
+    Returns:
+        Created report with generated ID
+    """
+    try:
+        url = f"{MCP_URLS['sov_quasi']}/api/reports"
+        payload = {
+            "name": name,
+            "type": report_type,
+            "status": status
+        }
+        if description:
+            payload["description"] = description
+
+        response = _post(url, json_data=payload)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        logger.error(f"Sov-Quasi MCP add error: {e}")
+        return {"error": str(e)}
+
+
+def get_pending_sov_quasi_reports() -> Dict[str, Any]:
+    """
+    Get summary of pending sovereign/quasi-sovereign reports.
+
+    Returns:
+        Dict with pending_sovereign, pending_quasi, and total counts
+    """
+    try:
+        reports = get_sov_quasi_reports()
+        if isinstance(reports, list) and reports and "error" in reports[0]:
+            return reports[0]
+
+        pending = [r for r in reports if r.get("status") == "pending"]
+        sovereign = [r for r in pending if r.get("type") == "sovereign"]
+        quasi = [r for r in pending if r.get("type") == "quasi-sovereign"]
+
+        return {
+            "pending_sovereign": [r.get("name") for r in sovereign],
+            "pending_quasi": [r.get("name") for r in quasi],
+            "sovereign_count": len(sovereign),
+            "quasi_count": len(quasi),
+            "total_pending": len(pending)
+        }
+    except Exception as e:
+        logger.error(f"Sov-Quasi MCP pending error: {e}")
+        return {"error": str(e)}
 
 
 # ============================================================================
