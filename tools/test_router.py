@@ -91,7 +91,7 @@ TEST_CASES = [
 
 async def test_single_model(model_name: str, model_config: Dict) -> Dict[str, Any]:
     """Test a single model against all test cases."""
-    from minerva_mcp.src.fallback_client import FallbackLLMClient, ModelConfig
+    from bob_mcp.src.fallback_client import FallbackLLMClient, ModelConfig
     from orca_mcp.tools.query_router import ROUTER_PROMPT
     import json
 

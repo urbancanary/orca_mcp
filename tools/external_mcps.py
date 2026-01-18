@@ -894,29 +894,143 @@ def add_sov_quasi_report(
 
 def get_pending_sov_quasi_reports() -> Dict[str, Any]:
     """
-    Get summary of pending sovereign/quasi-sovereign reports.
+    Get summary of reports needing research or processing.
 
     Returns:
-        Dict with pending_sovereign, pending_quasi, and total counts
+        Dict with counts and lists by status
     """
     try:
         reports = get_sov_quasi_reports()
         if isinstance(reports, list) and reports and "error" in reports[0]:
             return reports[0]
 
-        pending = [r for r in reports if r.get("status") == "pending"]
-        sovereign = [r for r in pending if r.get("type") == "sovereign"]
-        quasi = [r for r in pending if r.get("type") == "quasi-sovereign"]
+        # Include both "pending" and "needs-research" statuses
+        needs_work = [r for r in reports if r.get("status") in ("pending", "needs-research")]
+        raw_uploaded = [r for r in reports if r.get("status") == "raw-uploaded"]
+
+        sovereign_needs = [r for r in needs_work if r.get("type") == "sovereign"]
+        quasi_needs = [r for r in needs_work if r.get("type") == "quasi-sovereign"]
 
         return {
-            "pending_sovereign": [r.get("name") for r in sovereign],
-            "pending_quasi": [r.get("name") for r in quasi],
-            "sovereign_count": len(sovereign),
-            "quasi_count": len(quasi),
-            "total_pending": len(pending)
+            "needs_research": [r.get("name") for r in sovereign_needs],
+            "raw_uploaded": [r.get("name") for r in raw_uploaded],
+            "needs_research_count": len(sovereign_needs),
+            "raw_uploaded_count": len(raw_uploaded),
+            "quasi_pending": [r.get("name") for r in quasi_needs],
+            "total_needing_work": len(needs_work)
         }
     except Exception as e:
         logger.error(f"Sov-Quasi MCP pending error: {e}")
+        return {"error": str(e)}
+
+
+def get_priority_countries(priority: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Get countries that need research, organized by priority.
+
+    Priority is based on portfolio exposure (number of bond positions):
+    - high: 20+ positions
+    - medium: 10-19 positions
+    - low: 5-9 positions
+    - minimal: <5 positions
+
+    Args:
+        priority: Optional filter ('high', 'medium', 'low', 'minimal')
+
+    Returns:
+        Dict with countries grouped by priority, with position counts
+    """
+    try:
+        reports = get_sov_quasi_reports()
+        if isinstance(reports, list) and reports and "error" in reports[0]:
+            return reports[0]
+
+        # Filter to needs-research sovereigns
+        needs_research = [
+            r for r in reports
+            if r.get("status") == "needs-research" and r.get("type") == "sovereign"
+        ]
+
+        # Group by priority
+        by_priority = {"high": [], "medium": [], "low": [], "minimal": []}
+        for r in needs_research:
+            p = r.get("priority", "medium")
+            positions = r.get("portfolioPositions", 0)
+            by_priority.setdefault(p, []).append({
+                "country": r.get("name"),
+                "positions": positions,
+                "description": r.get("description", "")
+            })
+
+        # Sort each priority group by positions descending
+        for p in by_priority:
+            by_priority[p].sort(key=lambda x: -x.get("positions", 0))
+
+        # Filter if priority specified
+        if priority and priority in by_priority:
+            return {
+                "priority": priority,
+                "countries": by_priority[priority],
+                "count": len(by_priority[priority])
+            }
+
+        return {
+            "high": by_priority["high"],
+            "medium": by_priority["medium"],
+            "low": by_priority["low"],
+            "minimal": by_priority["minimal"],
+            "summary": {
+                "high_count": len(by_priority["high"]),
+                "medium_count": len(by_priority["medium"]),
+                "low_count": len(by_priority["low"]),
+                "minimal_count": len(by_priority["minimal"]),
+                "total": sum(len(v) for v in by_priority.values())
+            }
+        }
+    except Exception as e:
+        logger.error(f"Sov-Quasi priority error: {e}")
+        return {"error": str(e)}
+
+
+def check_country_priority(country: str) -> Dict[str, Any]:
+    """
+    Check if a specific country needs a research report and its priority.
+
+    Args:
+        country: Country name to check
+
+    Returns:
+        Dict with country status, priority, and portfolio positions
+    """
+    try:
+        reports = get_sov_quasi_reports()
+        if isinstance(reports, list) and reports and "error" in reports[0]:
+            return reports[0]
+
+        # Normalize for comparison
+        country_lower = country.lower().replace(" ", "").replace("_", "")
+
+        for r in reports:
+            name_lower = r.get("name", "").lower().replace(" ", "").replace("_", "")
+            if name_lower == country_lower:
+                return {
+                    "country": r.get("name"),
+                    "status": r.get("status"),
+                    "priority": r.get("priority", "N/A"),
+                    "portfolio_positions": r.get("portfolioPositions", 0),
+                    "type": r.get("type"),
+                    "description": r.get("description", ""),
+                    "has_report": r.get("status") in ("raw-uploaded", "completed"),
+                    "needs_research": r.get("status") == "needs-research"
+                }
+
+        return {
+            "country": country,
+            "found": False,
+            "message": f"Country '{country}' not found in tracker"
+        }
+    except Exception as e:
+        logger.error(f"Sov-Quasi check country error: {e}")
         return {"error": str(e)}
 
 

@@ -88,6 +88,11 @@ ENABLED_TOOLS = {
     "get_sovereign_section",         # Specific section from report (ratings, outlook, etc.)
     "list_sovereign_countries",      # List all available reports
     "search_sovereign_reports",      # Search across reports
+
+    # Phase 11: Report Pipeline Tracking (Sov-Quasi)
+    "get_priority_countries",        # Countries needing research by priority
+    "check_country_priority",        # Check specific country's priority/status
+    "get_pending_reports",           # Summary of reports needing work
 }
 
 # Add current directory to path for imports
@@ -226,6 +231,10 @@ try:
         add_to_supabase_watchlist,
         remove_from_supabase_watchlist,
         get_portfolio_with_ratings_async,
+        # Sov-Quasi Report Tracking
+        get_priority_countries,
+        check_country_priority,
+        get_pending_sov_quasi_reports,
     )
     from tools.sovereign_reports import (
         get_sovereign_report,
@@ -306,6 +315,10 @@ except ImportError:
         add_to_supabase_watchlist,
         remove_from_supabase_watchlist,
         get_portfolio_with_ratings_async,
+        # Sov-Quasi Report Tracking
+        get_priority_countries,
+        check_country_priority,
+        get_pending_sov_quasi_reports,
     )
     from orca_mcp.tools.sovereign_reports import (
         get_sovereign_report,
@@ -1044,6 +1057,41 @@ INTERNAL_TOOLS = [
                 "required": ["query"]
             }
         ),
+
+        # ============================================================================
+        # REPORT PIPELINE TRACKING (Sov-Quasi)
+        # ============================================================================
+        Tool(
+            name="get_priority_countries",
+            description="Get countries that need research reports, organized by priority (high/medium/low/minimal). Priority is based on portfolio exposure - number of bond positions we hold.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "priority": {"type": "string", "description": "Filter by priority level", "enum": ["high", "medium", "low", "minimal"]}
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="check_country_priority",
+            description="Check if a specific country needs a research report and what its priority is. Returns status, priority, and portfolio positions.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "country": {"type": "string", "description": "Country name to check (e.g., 'Philippines', 'Egypt')"}
+                },
+                "required": ["country"]
+            }
+        ),
+        Tool(
+            name="get_pending_reports",
+            description="Get summary of sovereign reports needing work - both those needing research and those with raw reports ready to process.",
+            inputSchema={
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        ),
     ]
 
 
@@ -1674,6 +1722,23 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             query = arguments.get("query")
             max_results = arguments.get("max_results", 5)
             result = search_sovereign_reports(query, max_results)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        # ============================================================================
+        # REPORT PIPELINE TRACKING (Sov-Quasi)
+        # ============================================================================
+        elif name == "get_priority_countries":
+            priority = arguments.get("priority")
+            result = get_priority_countries(priority)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "check_country_priority":
+            country = arguments.get("country")
+            result = check_country_priority(country)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "get_pending_reports":
+            result = get_pending_sov_quasi_reports()
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         else:

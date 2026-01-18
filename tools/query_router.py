@@ -91,6 +91,12 @@ Given a user query and optional conversation context, determine which internal t
 - "compare country reports" → use get_sovereign_report for each country
 - "search reports for [term]" → search_sovereign_reports
 
+### Report Pipeline / Priority Queries
+- "priority countries", "high priority", "what needs research" → get_priority_countries
+- "is [country] a priority", "Philippines priority", "do we need [country]" → check_country_priority
+- "pending reports", "reports needing work", "what's missing" → get_pending_reports
+- "which countries need reports" → get_priority_countries (shows all priorities)
+
 ### Economic Data Queries
 - Country + economic indicator → get_imf_indicator (default for international data)
 - "US" or "United States" + economic term → get_fred_series (FRED is authoritative for US)
@@ -203,6 +209,11 @@ Given a user query and optional conversation context, determine which internal t
 47. list_sovereign_countries() - List all available sovereign credit reports
 48. search_sovereign_reports(query, max_results?) - Search across all reports for keyword/phrase
 
+## Report Pipeline Tracking (priority based on portfolio exposure)
+49. get_priority_countries(priority?) - Countries needing research by priority (high/medium/low/minimal). Priority based on number of bond positions.
+50. check_country_priority(country) - Check if specific country needs research report and its priority level
+51. get_pending_reports() - Summary of all reports needing work (needs-research vs raw-uploaded)
+
 ## Display-Ready Endpoints (for thin frontends - all values include _fmt versions)
 39. get_holdings_display(portfolio_id?) - Holdings with ALL display columns and formatted values. Use for Holdings page.
 40. get_portfolio_dashboard(portfolio_id?) - Single call for Portfolio/Summary page: stats, allocations, compliance summary.
@@ -246,6 +257,15 @@ If the query is ambiguous or you need more information:
 - "what countries have reports?" -> {{"tool": "list_sovereign_countries", "args": {{}}, "confidence": 0.95}}
 - "search reports for banking crisis" -> {{"tool": "search_sovereign_reports", "args": {{"query": "banking crisis"}}, "confidence": 0.92}}
 - "outlook for Hungary" -> {{"tool": "get_sovereign_section", "args": {{"country": "Hungary", "section": "outlook"}}, "confidence": 0.90}}
+
+### Report Pipeline / Priority Examples
+- "what are the high priority countries?" -> {{"tool": "get_priority_countries", "args": {{"priority": "high"}}, "confidence": 0.95}}
+- "which countries need research?" -> {{"tool": "get_priority_countries", "args": {{}}, "confidence": 0.92}}
+- "is Philippines a priority?" -> {{"tool": "check_country_priority", "args": {{"country": "Philippines"}}, "confidence": 0.95}}
+- "do we need a report for Egypt?" -> {{"tool": "check_country_priority", "args": {{"country": "Egypt"}}, "confidence": 0.90}}
+- "what reports are pending?" -> {{"tool": "get_pending_reports", "args": {{}}, "confidence": 0.95}}
+- "show me reports needing work" -> {{"tool": "get_pending_reports", "args": {{}}, "confidence": 0.92}}
+- "priority status for Argentina" -> {{"tool": "check_country_priority", "args": {{"country": "Argentina"}}, "confidence": 0.93}}
 
 ### Disambiguation Examples (apply rules)
 - "Colombia" -> {{"tool": "get_nfa_rating", "args": {{"country": "Colombia"}}, "confidence": 0.90}}
