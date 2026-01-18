@@ -850,7 +850,11 @@ def get_sov_quasi_reports(
 
         response = _get(url, params=params)
         response.raise_for_status()
-        return response.json()
+        data = response.json()
+        # API returns {"reports": [...]} - extract the list
+        if isinstance(data, dict) and "reports" in data:
+            return data["reports"]
+        return data
     except Exception as e:
         logger.error(f"Sov-Quasi MCP error: {e}")
         return [{"error": str(e)}]
