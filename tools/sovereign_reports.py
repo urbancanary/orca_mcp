@@ -13,17 +13,24 @@ Reports location: /Users/andyseaman/Notebooks/sovereign-credit-system/credit_rep
 import os
 import re
 import logging
+import requests
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
-# Default reports directory
+# Default reports directory (local development)
 REPORTS_DIR = Path(os.environ.get(
     "SOVEREIGN_REPORTS_DIR",
     "/Users/andyseaman/Notebooks/sovereign-credit-system/credit_reports/moodys_style"
 ))
+
+# Lexa MCP URL for fetching reports when local files unavailable (Railway deployment)
+LEXA_MCP_URL = os.environ.get("LEXA_MCP_URL", "https://lexa-mcp-production.up.railway.app")
+
+# Check if we're running in Railway (no local reports)
+IS_RAILWAY = not REPORTS_DIR.exists()
 
 # Section patterns for HTML
 HTML_SECTION_PATTERNS = {
@@ -121,16 +128,73 @@ def _find_report_file(country: str) -> Optional[Path]:
 @lru_cache(maxsize=50)
 def _load_report(country: str) -> Optional[tuple]:
     """Load and cache a report's content. Returns (content, format) tuple."""
+    # Try local file first
     file_path = _find_report_file(country)
-    if not file_path:
-        return None
+    if file_path:
+        try:
+            content = file_path.read_text(encoding='utf-8')
+            file_format = "html" if file_path.suffix.lower() == ".html" else "md"
+            return (content, file_format)
+        except Exception as e:
+            logger.error(f"Error reading report for {country}: {e}")
+
+    # Fall back to Lexa MCP (Railway deployment)
+    if IS_RAILWAY:
+        report = _fetch_report_from_lexa(country)
+        if report:
+            return (report, "text")
+
+    return None
+
+
+def _fetch_report_from_lexa(country: str) -> Optional[str]:
+    """
+    Fetch a full report from Lexa MCP by asking for all sections.
+
+    Used when running on Railway where local files aren't available.
+    """
     try:
-        content = file_path.read_text(encoding='utf-8')
-        file_format = "html" if file_path.suffix.lower() == ".html" else "md"
-        return (content, file_format)
+        # Normalize country name for Lexa (removes spaces)
+        country_normalized = country.replace(" ", "")
+
+        # Ask Lexa to provide the full report content
+        response = requests.post(
+            f"{LEXA_MCP_URL}/api/ask",
+            json={
+                "question": f"Provide the complete credit report content for {country}. Include all sections: executive summary, ratings, economic analysis, fiscal position, external position, political/institutional, banking sector, outlook, strengths, and vulnerabilities. Give me the full detailed content.",
+                "country": country_normalized,
+                "max_words": 5000  # Request full content
+            },
+            timeout=60
+        )
+
+        if response.status_code == 200:
+            data = response.json()
+            answer = data.get("answer", "")
+            if answer and len(answer) > 500:  # Ensure we got substantial content
+                logger.info(f"Fetched report for {country} from Lexa MCP ({len(answer)} chars)")
+                return answer
+            else:
+                logger.warning(f"Lexa MCP returned insufficient content for {country}")
+        else:
+            logger.warning(f"Lexa MCP returned {response.status_code} for {country}")
+
     except Exception as e:
-        logger.error(f"Error reading report for {country}: {e}")
-        return None
+        logger.error(f"Error fetching report from Lexa MCP for {country}: {e}")
+
+    return None
+
+
+def _get_lexa_countries() -> List[str]:
+    """Get list of available countries from Lexa MCP."""
+    try:
+        response = requests.get(f"{LEXA_MCP_URL}/api/countries", timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("countries", [])
+    except Exception as e:
+        logger.error(f"Error fetching countries from Lexa MCP: {e}")
+    return []
 
 
 def list_available_countries() -> Dict[str, Any]:
@@ -140,6 +204,17 @@ def list_available_countries() -> Dict[str, Any]:
     Returns:
         Dict with countries list and count
     """
+    # Use Lexa MCP when running on Railway
+    if IS_RAILWAY:
+        countries = _get_lexa_countries()
+        if countries:
+            return {
+                "countries": countries,
+                "count": len(countries),
+                "source": "lexa_mcp"
+            }
+        return {"error": "Could not fetch countries from Lexa MCP", "countries": []}
+
     if not REPORTS_DIR.exists():
         return {"error": f"Reports directory not found: {REPORTS_DIR}", "countries": []}
 
