@@ -69,6 +69,10 @@ ENABLED_TOOLS = {
     "check_trade_compliance",        # Enhanced compliance with impact analysis
     "get_cashflows_display",         # Projected coupons and maturities
     "get_pnl_display",               # P&L reconciliation with validation
+    "get_compliance_display",        # Compliance dashboard with rules + charts
+    "get_ratings_display",           # Rating distribution by source
+    "get_issuer_exposure",           # 5/10/40 issuer concentration
+    "get_cash_event_horizon",        # Historical + future cash timeline
 
     # Phase 7: Additional portfolio tools
     "get_client_transactions",       # Transaction history
@@ -196,6 +200,10 @@ try:
         check_trade_compliance,
         get_cashflows_display,
         get_pnl_display,
+        get_compliance_display,
+        get_ratings_display,
+        get_issuer_exposure,
+        get_cash_event_horizon,
     )
     from tools.external_mcps import (
         get_nfa_rating,
@@ -283,6 +291,10 @@ except ImportError:
         check_trade_compliance,
         get_cashflows_display,
         get_pnl_display,
+        get_compliance_display,
+        get_ratings_display,
+        get_issuer_exposure,
+        get_cash_event_horizon,
     )
     from orca_mcp.tools.external_mcps import (
         get_nfa_rating,
@@ -978,6 +990,71 @@ INTERNAL_TOOLS = [
                 "properties": {
                     "portfolio_id": {"type": "string", "description": "Portfolio ID (default: 'wnbf')"},
                     "months_ahead": {"type": "integer", "description": "How many months ahead (default: 12)"},
+                    "client_id": {"type": "string", "description": "Client ID"}
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="get_compliance_display",
+            description="Display-ready compliance dashboard. Returns is_compliant status, rules with pass/fail, country concentration chart data, violations, and metrics. Use for Compliance page.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "portfolio_id": {"type": "string", "description": "Portfolio ID (default: 'wnbf')"},
+                    "client_id": {"type": "string", "description": "Client ID"}
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="get_pnl_display",
+            description="P&L reconciliation with validation. Returns opening/closing NAV, breakdown (realized, unrealized, coupons), by-holding P&L, and reconciliation check. Supports MTD, YTD, Since Inception periods.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "portfolio_id": {"type": "string", "description": "Portfolio ID (default: 'wnbf')"},
+                    "period": {"type": "string", "enum": ["MTD", "YTD", "Since Inception", "Custom"], "description": "Period for P&L calculation"},
+                    "start_date": {"type": "string", "description": "Start date for Custom period (YYYY-MM-DD)"},
+                    "end_date": {"type": "string", "description": "End date for Custom period (YYYY-MM-DD)"},
+                    "client_id": {"type": "string", "description": "Client ID"}
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="get_ratings_display",
+            description="Rating distribution for Ratings page. Returns distribution by rating with IG/HY split, summary stats (ig_pct, hy_pct, avg_rating). Supports S&P, Moody's, and stub ratings.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "portfolio_id": {"type": "string", "description": "Portfolio ID (default: 'wnbf')"},
+                    "rating_source": {"type": "string", "enum": ["sp", "sp_stub", "moodys"], "description": "Rating source (default: sp_stub)"},
+                    "client_id": {"type": "string", "description": "Client ID"}
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="get_issuer_exposure",
+            description="Issuer-level concentration for 5/10/40 rule compliance. Returns issuers with their bonds, total exposure %, over_5/over_10 flags, and rule pass/fail summary.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "portfolio_id": {"type": "string", "description": "Portfolio ID (default: 'wnbf')"},
+                    "client_id": {"type": "string", "description": "Client ID"}
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="get_cash_event_horizon",
+            description="Historical + future cash timeline. Returns current balance, historical transactions with running balance, future cashflows (coupons/maturities) with projected balance.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "portfolio_id": {"type": "string", "description": "Portfolio ID (default: 'wnbf')"},
+                    "future_days": {"type": "integer", "description": "How many days ahead for future cashflows (default: 90)"},
                     "client_id": {"type": "string", "description": "Client ID"}
                 },
                 "required": []
@@ -1718,6 +1795,36 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             portfolio_id = arguments.get("portfolio_id", "wnbf")
             months_ahead = arguments.get("months_ahead", 12)
             result = get_cashflows_display(portfolio_id, months_ahead, client_id)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "get_compliance_display":
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
+            result = get_compliance_display(portfolio_id, client_id)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "get_pnl_display":
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
+            period = arguments.get("period", "Since Inception")
+            start_date = arguments.get("start_date")
+            end_date = arguments.get("end_date")
+            result = get_pnl_display(portfolio_id, period, start_date, end_date, client_id)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "get_ratings_display":
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
+            rating_source = arguments.get("rating_source", "sp_stub")
+            result = get_ratings_display(portfolio_id, rating_source, client_id)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "get_issuer_exposure":
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
+            result = get_issuer_exposure(portfolio_id, client_id)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "get_cash_event_horizon":
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
+            future_days = arguments.get("future_days", 90)
+            result = get_cash_event_horizon(portfolio_id, future_days, client_id)
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         # ============================================================================
