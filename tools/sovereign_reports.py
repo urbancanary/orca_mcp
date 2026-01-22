@@ -31,7 +31,6 @@ LEXA_MCP_URL = os.environ.get("LEXA_MCP_URL", "https://lexa-mcp-production.up.ra
 
 # Check if we're running in Railway (no local reports)
 IS_RAILWAY = not REPORTS_DIR.exists()
-logger.info(f"Sovereign reports: REPORTS_DIR={REPORTS_DIR}, exists={REPORTS_DIR.exists()}, IS_RAILWAY={IS_RAILWAY}")
 
 # Section patterns for HTML
 HTML_SECTION_PATTERNS = {
@@ -205,11 +204,8 @@ def list_available_countries() -> Dict[str, Any]:
     Returns:
         Dict with countries list and count
     """
-    logger.info(f"list_available_countries called, IS_RAILWAY={IS_RAILWAY}")
-
-    # Use Lexa MCP when running on Railway
+    # Use Lexa MCP when running on Railway (no local files)
     if IS_RAILWAY:
-        logger.info(f"Using Lexa MCP fallback at {LEXA_MCP_URL}")
         countries = _get_lexa_countries()
         if countries:
             return {
@@ -217,10 +213,10 @@ def list_available_countries() -> Dict[str, Any]:
                 "count": len(countries),
                 "source": "lexa_mcp"
             }
-        return {"error": "Could not fetch countries from Lexa MCP", "countries": [], "is_railway": True, "lexa_url": LEXA_MCP_URL}
+        return {"error": "Could not fetch countries from Lexa MCP", "countries": []}
 
     if not REPORTS_DIR.exists():
-        return {"error": f"Reports directory not found: {REPORTS_DIR}", "countries": [], "is_railway": IS_RAILWAY}
+        return {"error": f"Reports directory not found: {REPORTS_DIR}", "countries": []}
 
     countries_set = set()
 
