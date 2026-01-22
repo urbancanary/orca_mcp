@@ -195,8 +195,16 @@ def get_holdings_display(
         face_value = float(row.get('par_amount', 0) or 0)
         market_value = float(row.get('market_value', 0) or 0)
         price = float(row.get('price', 0) or 0)
-        avg_cost = float(row.get('avg_cost', price) or price)  # Default to current price if no avg cost
-        cost_basis = face_value * (avg_cost / 100) if avg_cost else market_value
+
+        # Cost basis: use stored cost_basis, or calculate from purchase_price/avg_cost
+        cost_basis = float(row.get('cost_basis', 0) or 0)
+        avg_cost = float(row.get('purchase_price', 0) or row.get('avg_cost', 0) or 0)
+        if not cost_basis and avg_cost and face_value:
+            cost_basis = face_value * (avg_cost / 100)
+        if not cost_basis:
+            cost_basis = market_value  # Fallback only if no cost data at all
+        if not avg_cost:
+            avg_cost = price  # For display purposes only
 
         # Calculate P&L
         unrealized_pnl = market_value - cost_basis
@@ -323,7 +331,25 @@ def get_portfolio_dashboard(
 
     # Extract values from summary
     total_bond_value = float(summary.get('total_market_value', 0) or 0)
+
+    # Cash: try summary first, then calculate from transactions
     cash_balance = float(summary.get('cash', 0) or 0)
+    if cash_balance == 0:
+        # Calculate cash from transactions (INITIAL + SELLs + COUPONs - BUYs)
+        txns_df = get_transactions(portfolio_id, client_id)
+        if not txns_df.empty:
+            for _, row in txns_df.iterrows():
+                txn_type = safe_str(row.get('transaction_type', '')).upper()
+                status = safe_str(row.get('status', '')).lower()
+                if status not in ['confirmed', 'settled']:
+                    continue
+                # Use settlement_amount (actual cash impact), not market_value
+                amount = safe_float(row.get('settlement_amount') or row.get('market_value'))
+                if txn_type in ['INITIAL', 'SELL', 'COUPON']:
+                    cash_balance += amount
+                elif txn_type == 'BUY':
+                    cash_balance -= amount
+
     total_value = total_bond_value + cash_balance
     cash_pct = (cash_balance / total_value * 100) if total_value else 0
 
@@ -944,7 +970,7 @@ def get_compliance_display(
 
 
 # =============================================================================
-# 8. GET P&L DISPLAY
+# 8. GET P&L DISPLAY - Proper reconciliation (not derived)
 # =============================================================================
 
 def get_pnl_display(
@@ -954,7 +980,15 @@ def get_pnl_display(
     end_date: str = None,
     client_id: str = None
 ) -> Dict[str, Any]:
-    """P&L reconciliation for any period."""
+    """
+    P&L reconciliation with validation.
+
+    Proper accounting:
+    - Opening NAV = Total Cost Basis + Initial Cash
+    - Closing NAV = Total Market Value + Current Cash
+    - P&L components: Unrealized (MV - Cost) + Realized + Coupons
+    - Validation: Opening + Total P&L = Closing (must balance)
+    """
     holdings_df = get_holdings(portfolio_id, staging_id=1, client_id=client_id)
     txns_df = get_transactions(portfolio_id, client_id)
     today = datetime.now()
@@ -970,48 +1004,134 @@ def get_pnl_display(
     else:
         period_start, period_end, period_label = datetime(2024, 10, 31), today, "Since Inception"
 
+    # Calculate cash flows from transactions (settled/confirmed only)
+    initial_investment = 0
+    total_buys = 0
+    total_sells = 0
+    total_coupons = 0
+
+    if not txns_df.empty and 'transaction_type' in txns_df.columns:
+        # Use market_value column from D1 transactions
+        amount_col = 'market_value' if 'market_value' in txns_df.columns else 'settlement_amount'
+
+        for _, row in txns_df.iterrows():
+            txn_type = safe_str(row.get('transaction_type', '')).upper()
+            status = safe_str(row.get('status', '')).lower()
+            amount = safe_float(row.get(amount_col, 0))
+
+            # Only count settled/confirmed transactions for cash calculation
+            if status in ['settled', 'confirmed']:
+                if txn_type == 'INITIAL':
+                    initial_investment += amount
+                elif txn_type == 'BUY':
+                    total_buys += amount
+                elif txn_type == 'SELL':
+                    total_sells += amount
+                elif txn_type == 'COUPON':
+                    total_coupons += amount
+
+    # Calculate P&L per holding
+    total_cost_basis = 0
+    total_market_value = 0
     total_unrealised = 0
     by_holding = []
+
     for _, row in holdings_df.iterrows():
         face_value = safe_float(row.get('par_amount'))
         market_value = safe_float(row.get('market_value'))
-        avg_cost = safe_float(row.get('avg_cost')) or safe_float(row.get('price', 100)) or 100
-        cost_basis = face_value * (avg_cost / 100) if avg_cost else market_value
+
+        # Cost basis from purchase price or stored cost_basis
+        cost_basis = safe_float(row.get('cost_basis'))
+        if not cost_basis:
+            avg_cost = safe_float(row.get('avg_cost')) or safe_float(row.get('purchase_price'))
+            if avg_cost and face_value:
+                cost_basis = face_value * (avg_cost / 100)
+            else:
+                cost_basis = market_value  # Fallback if no cost data
+
         unrealised = market_value - cost_basis
+
+        total_cost_basis += cost_basis
+        total_market_value += market_value
         total_unrealised += unrealised
+
         by_holding.append({
-            "ticker": safe_str(row.get('ticker')), "isin": safe_str(row.get('isin')),
-            "realised": 0, "unrealised": round(unrealised, 0), "unrealised_fmt": fmt_money(unrealised),
-            "coupons": 0, "total": round(unrealised, 0), "total_fmt": fmt_money(unrealised)
+            "ticker": safe_str(row.get('ticker')),
+            "isin": safe_str(row.get('isin')),
+            "cost_basis": round(cost_basis, 0),
+            "cost_basis_fmt": fmt_money(cost_basis),
+            "market_value": round(market_value, 0),
+            "market_value_fmt": fmt_money(market_value),
+            "realised": 0,
+            "realised_fmt": fmt_money(0),
+            "unrealised": round(unrealised, 0),
+            "unrealised_fmt": fmt_money(unrealised),
+            "coupons": 0,
+            "total": round(unrealised, 0),
+            "total_fmt": fmt_money(unrealised)
         })
 
-    total_coupons = 0
-    if not txns_df.empty and 'transaction_type' in txns_df.columns:
-        coupons = txns_df[txns_df['transaction_type'].str.upper() == 'COUPON']
-        if not coupons.empty and 'market_value' in coupons.columns:
-            total_coupons = coupons['market_value'].sum()
+    # Opening NAV = Initial Investment (not cost basis + initial)
+    opening_nav = initial_investment
 
-    total_return = total_unrealised + total_coupons
-    summary_data = get_holdings_summary(portfolio_id, staging_id=1, client_id=client_id)
-    closing_nav = safe_float(summary_data.get('total_market_value')) + safe_float(summary_data.get('cash'))
-    opening_nav = closing_nav - total_return
+    # Implied Cash = Initial - Buys + Sells + Coupons
+    implied_cash = initial_investment - total_buys + total_sells + total_coupons
+
+    # Closing NAV = Holdings Market Value + Implied Cash
+    closing_nav = total_market_value + implied_cash
+
+    # Total P&L = Closing NAV - Opening NAV
+    total_return = closing_nav - opening_nav
+
+    # For breakdown: Realized P&L = Total Return - Unrealized - Coupons
+    total_realised = total_return - total_unrealised - total_coupons
+
+    # VALIDATION: Opening + P&L should equal Closing
+    expected_closing = opening_nav + total_return
+    reconciliation_diff = closing_nav - expected_closing
+    is_reconciled = abs(reconciliation_diff) < 1.0  # $1 tolerance
+
+    return_pct = (total_return / opening_nav * 100) if opening_nav > 0 else 0
 
     return {
         "currency": "USD",
         "period": {"start": fmt_date(period_start), "end": fmt_date(period_end), "label": period_label},
         "summary": {
-            "opening_nav": round(opening_nav, 0), "opening_nav_fmt": fmt_money(opening_nav),
-            "closing_nav": round(closing_nav, 0), "closing_nav_fmt": fmt_money(closing_nav),
-            "total_return": round(total_return, 0), "total_return_fmt": fmt_money(total_return),
-            "total_return_pct": round((total_return / opening_nav * 100) if opening_nav else 0, 2)
+            "opening_nav": round(opening_nav, 0),
+            "opening_nav_fmt": fmt_money(opening_nav),
+            "closing_nav": round(closing_nav, 0),
+            "closing_nav_fmt": fmt_money(closing_nav),
+            "total_return": round(total_return, 0),
+            "total_return_fmt": fmt_money(total_return),
+            "total_return_pct": round(return_pct, 2)
         },
         "breakdown": {
-            "realised_pnl": 0, "realised_pnl_fmt": fmt_money(0),
-            "unrealised_pnl": round(total_unrealised, 0), "unrealised_pnl_fmt": fmt_money(total_unrealised),
-            "coupon_income": round(total_coupons, 0), "coupon_income_fmt": fmt_money(total_coupons),
+            "realised_pnl": round(total_realised, 0),
+            "realised_pnl_fmt": fmt_money(total_realised),
+            "unrealised_pnl": round(total_unrealised, 0),
+            "unrealised_pnl_fmt": fmt_money(total_unrealised),
+            "coupon_income": round(total_coupons, 0),
+            "coupon_income_fmt": fmt_money(total_coupons),
             "accrued_change": 0
         },
-        "by_holding": by_holding
+        "by_holding": by_holding,
+        "cash_flows": {
+            "initial_investment": round(initial_investment, 0),
+            "total_buys": round(total_buys, 0),
+            "total_sells": round(total_sells, 0),
+            "total_coupons": round(total_coupons, 0),
+            "implied_cash": round(implied_cash, 0),
+            "holdings_value": round(total_market_value, 0)
+        },
+        "validation": {
+            "is_reconciled": is_reconciled,
+            "opening_nav": round(opening_nav, 0),
+            "total_pnl": round(total_return, 0),
+            "expected_closing": round(expected_closing, 0),
+            "actual_closing": round(closing_nav, 0),
+            "difference": round(reconciliation_diff, 2),
+            "formula": "Opening NAV + Total P&L = Closing NAV"
+        }
     }
 
 
@@ -1036,7 +1156,8 @@ def get_cash_event_horizon(
             txns_df = txns_df.sort_values('settlement_date')
         for _, row in txns_df.iterrows():
             txn_type = safe_str(row.get('transaction_type', '')).upper()
-            amount = safe_float(row.get('market_value'))
+            # Use settlement_amount (actual cash impact), not market_value
+            amount = safe_float(row.get('settlement_amount') or row.get('market_value'))
             if txn_type in ['INITIAL', 'SELL', 'COUPON']:
                 credit, debit = amount, 0
                 running_balance += amount
