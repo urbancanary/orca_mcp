@@ -91,6 +91,13 @@ Given a user query and optional conversation context, determine which internal t
 - "compare country reports" → use get_sovereign_report for each country
 - "search reports for [term]" → search_sovereign_reports
 
+### Report Q&A / Analysis Queries (uses LLM with full report context)
+- Questions about a country's report: "summarize Brazil's external position" → query_sovereign_report
+- Analysis requests: "what are Turkey's main credit risks?" → query_sovereign_report
+- Explanation requests: "explain Kazakhstan's NFA rating" → query_sovereign_report
+- Any question that requires synthesizing/analyzing report content → query_sovereign_report
+- Comparing multiple countries: "compare Brazil and Mexico fiscal positions" → compare_sovereign_reports
+
 ### Report Pipeline / Priority Queries
 - "priority countries", "high priority", "what needs research" → get_priority_countries
 - "is [country] a priority", "Philippines priority", "do we need [country]" → check_country_priority
@@ -209,6 +216,10 @@ Given a user query and optional conversation context, determine which internal t
 47. list_sovereign_countries() - List all available sovereign credit reports
 48. search_sovereign_reports(query, max_results?) - Search across all reports for keyword/phrase
 
+## Report Q&A (LLM-powered analysis with full report context)
+52. query_sovereign_report(country, question) - Ask any question about a country's credit report. Uses Gemini 2.5 Flash with context caching. Best for: summarizing sections, explaining ratings, identifying risks, answering specific questions.
+53. compare_sovereign_reports(countries, question) - Compare 2-5 countries on any aspect. Uses full reports for comprehensive comparison.
+
 ## Report Pipeline Tracking (priority based on portfolio exposure)
 49. get_priority_countries(priority?) - Countries needing research by priority (high/medium/low/minimal). Priority based on number of bond positions.
 50. check_country_priority(country) - Check if specific country needs research report and its priority level
@@ -257,6 +268,14 @@ If the query is ambiguous or you need more information:
 - "what countries have reports?" -> {{"tool": "list_sovereign_countries", "args": {{}}, "confidence": 0.95}}
 - "search reports for banking crisis" -> {{"tool": "search_sovereign_reports", "args": {{"query": "banking crisis"}}, "confidence": 0.92}}
 - "outlook for Hungary" -> {{"tool": "get_sovereign_section", "args": {{"country": "Hungary", "section": "outlook"}}, "confidence": 0.90}}
+
+### Report Q&A Examples (LLM-powered analysis)
+- "summarize Brazil's external position" -> {{"tool": "query_sovereign_report", "args": {{"country": "Brazil", "question": "summarize the external position"}}, "confidence": 0.95}}
+- "what are Turkey's main credit risks?" -> {{"tool": "query_sovereign_report", "args": {{"country": "Turkey", "question": "what are the main credit risks?"}}, "confidence": 0.95}}
+- "explain Kazakhstan's NFA rating rationale" -> {{"tool": "query_sovereign_report", "args": {{"country": "Kazakhstan", "question": "explain the NFA rating rationale"}}, "confidence": 0.93}}
+- "why does Colombia qualify for 5/10/40?" -> {{"tool": "query_sovereign_report", "args": {{"country": "Colombia", "question": "why does this country qualify for 5/10/40 UCITS compliance?"}}, "confidence": 0.92}}
+- "compare Brazil and Mexico fiscal positions" -> {{"tool": "compare_sovereign_reports", "args": {{"countries": ["Brazil", "Mexico"], "question": "compare fiscal positions"}}, "confidence": 0.94}}
+- "which has stronger reserves: Turkey or South Africa?" -> {{"tool": "compare_sovereign_reports", "args": {{"countries": ["Turkey", "South Africa"], "question": "which has stronger reserves?"}}, "confidence": 0.93}}
 
 ### Report Pipeline / Priority Examples
 - "what are the high priority countries?" -> {{"tool": "get_priority_countries", "args": {{"priority": "high"}}, "confidence": 0.95}}
@@ -484,6 +503,9 @@ CAPABILITIES:
 - Bonds: RVM database search, issuer classification
 - Video: Search transcripts, get summaries
 - Display-ready endpoints: Holdings, dashboard, transactions, cashflows with formatted values
+- Sovereign Credit Reports: Full country reports, section extraction, keyword search
+- Report Q&A: Ask questions about country reports (uses Gemini 2.5 Flash with caching)
+- Report Comparison: Compare 2-5 countries on any aspect
 
 EXAMPLES:
 - "What's the current 10Y treasury rate?"
@@ -497,5 +519,8 @@ EXAMPLES:
 - "Show portfolio dashboard"
 - "Calculate settlement for 500k Brazil at 82.5"
 - "Show upcoming cashflows"
+- "Summarize Brazil's external position"
+- "What are Turkey's main credit risks?"
+- "Compare Brazil and Mexico fiscal positions"
 
 Just describe what you need in natural language."""

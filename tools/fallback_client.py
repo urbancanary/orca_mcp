@@ -152,6 +152,15 @@ class FallbackLLMClient:
                 ModelConfig("OPENAI_MINI", "gpt-4o-mini", "openai", "OPENAI_API_KEY", 2),
                 ModelConfig("CLAUDE_HAIKU", "claude-haiku-4-5", "anthropic", "ANTHROPIC_API_KEY", 3),
             ]
+        elif self.purpose == "report_analysis":
+            # Report analysis: Gemini 2.5 Flash for large context + caching
+            # Reports are 10-50K tokens, benefits from 1M context window
+            # Gemini caching reduces cost ~80% for repeated queries on same report
+            return [
+                ModelConfig("GEMINI_FLASH_25", "gemini-2.5-flash-preview-05-20", "google", "GEMINI_API_KEY", 1),
+                ModelConfig("CLAUDE_SONNET", "claude-sonnet-4-20250514", "anthropic", "ANTHROPIC_API_KEY", 2),
+                ModelConfig("OPENAI_GPT4O_MINI", "gpt-4o-mini", "openai", "OPENAI_API_KEY", 3),
+            ]
         # Default order for other purposes (agents, parsing, etc.)
         return [
             ModelConfig("CLAUDE_HAIKU", "claude-haiku-4-5", "anthropic", "ANTHROPIC_API_KEY", 1),

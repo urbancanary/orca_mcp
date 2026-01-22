@@ -380,3 +380,264 @@ def get_sovereign_comparison(countries: List[str]) -> Dict[str, Any]:
         "countries": countries,
         "comparison": comparison
     }
+
+
+# ============================================================================
+# LLM-Powered Report Analysis
+# ============================================================================
+
+def _get_report_analysis_client():
+    """
+    Get FallbackLLMClient configured for report analysis.
+
+    Uses Gemini 2.5 Flash as primary (large context + caching benefits),
+    with Claude Sonnet and GPT-4o-mini as fallbacks.
+    """
+    import sys
+    MCP_CENTRAL_PATH = "/Users/andyseaman/Notebooks/mcp_central"
+    if MCP_CENTRAL_PATH not in sys.path:
+        sys.path.insert(0, MCP_CENTRAL_PATH)
+
+    # Try auth_mcp first (local development)
+    try:
+        from auth_mcp import FallbackLLMClient
+        logger.debug("Using FallbackLLMClient from auth_mcp")
+        client = FallbackLLMClient(purpose="report_analysis", requester="orca-mcp-reports")
+        client.initialize()
+        return client
+    except ImportError:
+        pass
+
+    # Fall back to local copy (Railway deployment)
+    try:
+        from orca_mcp.tools.fallback_client import FallbackLLMClient
+        logger.debug("Using FallbackLLMClient from local tools/")
+        client = FallbackLLMClient(purpose="report_analysis", requester="orca-mcp-reports")
+        client.initialize()
+        return client
+    except ImportError:
+        pass
+
+    # Last resort - relative import
+    try:
+        from .fallback_client import FallbackLLMClient
+        logger.debug("Using FallbackLLMClient from relative import")
+        client = FallbackLLMClient(purpose="report_analysis", requester="orca-mcp-reports")
+        client.initialize()
+        return client
+    except Exception as e:
+        logger.error(f"FallbackLLMClient import failed: {e}")
+        return None
+
+
+def query_sovereign_report(country: str, question: str, max_tokens: int = 2048) -> Dict[str, Any]:
+    """
+    Query a sovereign credit report using LLM analysis.
+
+    Sends the full report to Gemini 2.5 Flash (with context caching) for
+    intelligent Q&A. Falls back to Claude Sonnet or GPT-4o-mini if needed.
+
+    This approach is simpler and more effective than embeddings/RAG for
+    document-sized reports (10-50K tokens):
+    - Gemini's 1M context easily handles full reports
+    - Context caching reduces cost ~80% for repeated queries on same report
+    - No embedding maintenance or vector DB needed
+
+    Args:
+        country: Country name (e.g., "Brazil", "Kazakhstan")
+        question: Natural language question about the report
+        max_tokens: Maximum tokens in response (default 2048)
+
+    Returns:
+        Dict with answer, sources, model used, and metadata
+
+    Examples:
+        query_sovereign_report("Brazil", "summarize the external position")
+        query_sovereign_report("Turkey", "what are the main credit risks?")
+        query_sovereign_report("Kazakhstan", "explain the NFA rating rationale")
+    """
+    # 1. Fetch the full report
+    report = get_sovereign_report(country)
+    if "error" in report:
+        return {
+            "error": report["error"],
+            "country": country,
+            "question": question,
+            "available_countries": report.get("available_countries", [])
+        }
+
+    # 2. Get LLM client
+    client = _get_report_analysis_client()
+    if not client:
+        return {
+            "error": "LLM client unavailable. Check FallbackLLMClient configuration.",
+            "country": country,
+            "question": question
+        }
+
+    # 3. Build prompt with full report
+    system_prompt = """You are a sovereign credit analyst assistant. Your role is to answer
+questions about sovereign credit reports with precision and professionalism.
+
+Guidelines:
+- Ground all answers in the provided report content
+- Use specific numbers, percentages, and data points from the report
+- If the report doesn't contain information to answer the question, say so clearly
+- Write in professional financial prose suitable for institutional investors
+- Be concise but thorough - include all relevant data points
+- When citing data, indicate the source section (e.g., "The external position section shows...")
+- Do not invent or hallucinate data not present in the report"""
+
+    user_prompt = f"""Question: {question}
+
+=== {country} Sovereign Credit Report ===
+
+{report['content']}
+
+=== End of Report ===
+
+Please answer the question based on the report above. Be specific and cite relevant data."""
+
+    # 4. Call LLM with fallback
+    try:
+        response = client.chat(
+            messages=[{"role": "user", "content": user_prompt}],
+            system=system_prompt,
+            max_tokens=max_tokens
+        )
+
+        if not response.success:
+            return {
+                "error": f"LLM call failed: {response.error}",
+                "country": country,
+                "question": question
+            }
+
+        return {
+            "country": country,
+            "question": question,
+            "answer": response.text,
+            "model_used": f"{response.provider}/{response.model_used}",
+            "report_title": report.get("title", f"{country} Credit Report"),
+            "report_words": report.get("word_count", 0),
+            "report_chars": report.get("char_count", 0)
+        }
+
+    except Exception as e:
+        logger.error(f"Error querying report for {country}: {e}")
+        return {
+            "error": str(e),
+            "country": country,
+            "question": question
+        }
+
+
+def compare_sovereign_reports(
+    countries: List[str],
+    question: str,
+    max_tokens: int = 3000
+) -> Dict[str, Any]:
+    """
+    Compare multiple sovereign credit reports using LLM analysis.
+
+    Fetches reports for all specified countries and sends them to the LLM
+    for comparative analysis. Best for 2-4 countries to stay within context limits.
+
+    Args:
+        countries: List of country names to compare (2-4 recommended)
+        question: Comparison question (e.g., "compare external positions")
+        max_tokens: Maximum tokens in response
+
+    Returns:
+        Dict with comparative analysis and metadata
+
+    Examples:
+        compare_sovereign_reports(["Brazil", "Mexico"], "compare fiscal positions")
+        compare_sovereign_reports(["Turkey", "South Africa", "Egypt"], "which has strongest reserves?")
+    """
+    if len(countries) < 2:
+        return {"error": "Need at least 2 countries to compare"}
+
+    if len(countries) > 5:
+        return {"error": "Maximum 5 countries for comparison (context limits)"}
+
+    # 1. Fetch all reports
+    reports = {}
+    errors = []
+    total_words = 0
+
+    for country in countries:
+        report = get_sovereign_report(country)
+        if "error" in report:
+            errors.append(f"{country}: {report['error']}")
+        else:
+            reports[country] = report
+            total_words += report.get("word_count", 0)
+
+    if len(reports) < 2:
+        return {
+            "error": "Could not fetch enough reports for comparison",
+            "details": errors
+        }
+
+    # 2. Get LLM client
+    client = _get_report_analysis_client()
+    if not client:
+        return {"error": "LLM client unavailable"}
+
+    # 3. Build comparative prompt
+    system_prompt = """You are a sovereign credit analyst assistant specializing in
+comparative analysis. Your role is to compare sovereign credit profiles objectively.
+
+Guidelines:
+- Compare and contrast directly, highlighting key differences and similarities
+- Use specific numbers from each report for fair comparison
+- Rank or order countries where relevant to the question
+- Be balanced and objective - acknowledge strengths and weaknesses of each
+- Structure your response clearly (consider using country subheadings if helpful)
+- Do not invent data - only use information from the provided reports"""
+
+    # Build report sections
+    report_sections = []
+    for country, report in reports.items():
+        report_sections.append(f"""
+=== {country} ===
+{report['content']}
+""")
+
+    all_reports = "\n".join(report_sections)
+
+    user_prompt = f"""Comparison Question: {question}
+
+Countries: {', '.join(reports.keys())}
+
+{all_reports}
+
+=== End of Reports ===
+
+Provide a comparative analysis addressing the question. Be specific with data from each report."""
+
+    # 4. Call LLM
+    try:
+        response = client.chat(
+            messages=[{"role": "user", "content": user_prompt}],
+            system=system_prompt,
+            max_tokens=max_tokens
+        )
+
+        if not response.success:
+            return {"error": f"LLM call failed: {response.error}"}
+
+        return {
+            "countries": list(reports.keys()),
+            "question": question,
+            "analysis": response.text,
+            "model_used": f"{response.provider}/{response.model_used}",
+            "total_report_words": total_words,
+            "reports_fetched": len(reports),
+            "errors": errors if errors else None
+        }
+
+    except Exception as e:
+        logger.error(f"Error comparing reports: {e}")
+        return {"error": str(e)}

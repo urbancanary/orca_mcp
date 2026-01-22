@@ -68,6 +68,7 @@ ENABLED_TOOLS = {
     "get_transactions_display",      # Transaction history with formatting
     "check_trade_compliance",        # Enhanced compliance with impact analysis
     "get_cashflows_display",         # Projected coupons and maturities
+    "get_pnl_display",               # P&L reconciliation with validation
 
     # Phase 7: Additional portfolio tools
     "get_client_transactions",       # Transaction history
@@ -88,6 +89,10 @@ ENABLED_TOOLS = {
     "get_sovereign_section",         # Specific section from report (ratings, outlook, etc.)
     "list_sovereign_countries",      # List all available reports
     "search_sovereign_reports",      # Search across reports
+
+    # Phase 12: Report Q&A (LLM-powered with Gemini 2.5 Flash + context caching)
+    "query_sovereign_report",        # Ask questions about a country's report
+    "compare_sovereign_reports",     # Compare multiple countries' reports
 
     # Phase 11: Report Pipeline Tracking (Sov-Quasi)
     "get_priority_countries",        # Countries needing research by priority
@@ -190,6 +195,7 @@ try:
         get_transactions_display,
         check_trade_compliance,
         get_cashflows_display,
+        get_pnl_display,
     )
     from tools.external_mcps import (
         get_nfa_rating,
@@ -241,6 +247,8 @@ try:
         get_sovereign_section,
         list_available_countries as list_sovereign_countries,
         search_sovereign_reports,
+        query_sovereign_report,
+        compare_sovereign_reports,
     )
     from client_config import get_client_config
 except ImportError:
@@ -274,6 +282,7 @@ except ImportError:
         get_transactions_display,
         check_trade_compliance,
         get_cashflows_display,
+        get_pnl_display,
     )
     from orca_mcp.tools.external_mcps import (
         get_nfa_rating,
@@ -325,6 +334,8 @@ except ImportError:
         get_sovereign_section,
         list_available_countries as list_sovereign_countries,
         search_sovereign_reports,
+        query_sovereign_report,
+        compare_sovereign_reports,
     )
     from orca_mcp.client_config import get_client_config
 
@@ -1059,6 +1070,34 @@ INTERNAL_TOOLS = [
         ),
 
         # ============================================================================
+        # REPORT Q&A (LLM-powered with Gemini 2.5 Flash + context caching)
+        # ============================================================================
+        Tool(
+            name="query_sovereign_report",
+            description="Ask any question about a country's sovereign credit report. Uses Gemini 2.5 Flash with context caching for cost-effective analysis of full reports. Best for: summarizing sections, explaining ratings, identifying risks, answering specific questions.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "country": {"type": "string", "description": "Country name (e.g., 'Brazil', 'Turkey', 'Kazakhstan')"},
+                    "question": {"type": "string", "description": "Question to ask about the report (e.g., 'summarize the external position', 'what are the main credit risks?')"}
+                },
+                "required": ["country", "question"]
+            }
+        ),
+        Tool(
+            name="compare_sovereign_reports",
+            description="Compare 2-5 countries' sovereign credit reports using LLM analysis. Sends full reports to Gemini for comprehensive comparison.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "countries": {"type": "array", "items": {"type": "string"}, "description": "List of 2-5 country names to compare"},
+                    "question": {"type": "string", "description": "Comparison question (e.g., 'compare fiscal positions', 'which has stronger reserves?')"}
+                },
+                "required": ["countries", "question"]
+            }
+        ),
+
+        # ============================================================================
         # REPORT PIPELINE TRACKING (Sov-Quasi)
         # ============================================================================
         Tool(
@@ -1722,6 +1761,21 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             query = arguments.get("query")
             max_results = arguments.get("max_results", 5)
             result = search_sovereign_reports(query, max_results)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        # ============================================================================
+        # REPORT Q&A (LLM-powered with Gemini 2.5 Flash + context caching)
+        # ============================================================================
+        elif name == "query_sovereign_report":
+            country = arguments.get("country")
+            question = arguments.get("question")
+            result = query_sovereign_report(country, question)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "compare_sovereign_reports":
+            countries = arguments.get("countries", [])
+            question = arguments.get("question")
+            result = compare_sovereign_reports(countries, question)
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         # ============================================================================
