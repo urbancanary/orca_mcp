@@ -64,6 +64,7 @@ ENABLED_TOOLS = {
     # Phase 6: Display-Ready endpoints (for thin frontends)
     "get_holdings_display",          # Holdings with ALL display columns + _fmt values
     "get_portfolio_dashboard",       # Single call for Portfolio/Summary page
+    "get_dashboard_complete",        # Unified endpoint: dashboard + holdings in one call
     "calculate_trade_settlement",    # Pre-trade settlement calculations
     "get_transactions_display",      # Transaction history with formatting
     "check_trade_compliance",        # Enhanced compliance with impact analysis
@@ -195,6 +196,7 @@ try:
     from tools.display_endpoints import (
         get_holdings_display,
         get_portfolio_dashboard,
+        get_dashboard_complete,
         calculate_trade_settlement,
         get_transactions_display,
         check_trade_compliance,
@@ -286,6 +288,7 @@ except ImportError:
     from orca_mcp.tools.display_endpoints import (
         get_holdings_display,
         get_portfolio_dashboard,
+        get_dashboard_complete,
         calculate_trade_settlement,
         get_transactions_display,
         check_trade_compliance,
@@ -929,6 +932,19 @@ INTERNAL_TOOLS = [
                 "type": "object",
                 "properties": {
                     "portfolio_id": {"type": "string", "description": "Portfolio ID (default: 'wnbf')"},
+                    "client_id": {"type": "string", "description": "Client ID"}
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="get_dashboard_complete",
+            description="Unified endpoint for complete dashboard. Returns summary, allocation, compliance_summary, totals, and holdings array - all pre-formatted. Replaces separate calls to get_portfolio_dashboard + get_holdings_display.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "portfolio_id": {"type": "string", "description": "Portfolio ID (default: 'wnbf')"},
+                    "include_staging": {"type": "boolean", "description": "Include staging transactions (default: false)"},
                     "client_id": {"type": "string", "description": "Client ID"}
                 },
                 "required": []
@@ -1753,6 +1769,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "get_portfolio_dashboard":
             portfolio_id = arguments.get("portfolio_id", "wnbf")
             result = get_portfolio_dashboard(portfolio_id, client_id)
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "get_dashboard_complete":
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
+            include_staging = arguments.get("include_staging", False)
+            result = get_dashboard_complete(portfolio_id, include_staging, client_id)
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         elif name == "calculate_trade_settlement":

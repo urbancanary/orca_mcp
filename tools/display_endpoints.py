@@ -1377,3 +1377,46 @@ def get_issuer_exposure(
             "rule_5_10_40_pass": (max_issuer_pct <= 10) and (total_over_5_pct <= 40)
         }
     }
+
+
+# =============================================================================
+# 13. GET DASHBOARD COMPLETE (Unified Endpoint)
+# =============================================================================
+
+def get_dashboard_complete(
+    portfolio_id: str = "wnbf",
+    include_staging: bool = False,
+    client_id: str = None
+) -> Dict[str, Any]:
+    """
+    Single endpoint for complete dashboard data.
+
+    Combines get_portfolio_dashboard + get_holdings_display in one call,
+    eliminating multiple round trips and ensuring data consistency.
+
+    Args:
+        portfolio_id: Portfolio identifier
+        include_staging: Include staging/proposed transactions
+        client_id: Client identifier
+
+    Returns:
+        Complete dashboard data with summary, allocation, totals, holdings, compliance
+    """
+    # Get portfolio dashboard data (summary, allocation, compliance)
+    dashboard = get_portfolio_dashboard(portfolio_id, include_staging, client_id)
+
+    # Get holdings display data (holdings array, totals)
+    holdings_data = get_holdings_display(portfolio_id, include_staging, client_id)
+
+    # Combine into unified response
+    return {
+        "summary": dashboard.get("summary", {}),
+        "allocation": dashboard.get("allocation", {}),
+        "compliance_summary": dashboard.get("compliance_summary", {}),
+        "totals": holdings_data.get("totals", {}),
+        "holdings": holdings_data.get("holdings", []),
+        "cash": holdings_data.get("cash", 0),
+        "cash_fmt": holdings_data.get("cash_fmt", "0"),
+        "count": holdings_data.get("count", 0),
+        "as_of": dashboard.get("as_of", datetime.utcnow().isoformat() + "Z")
+    }
