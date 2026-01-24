@@ -1062,6 +1062,9 @@ def get_pnl_display(
         total_market_value += market_value
         total_unrealised += unrealised
 
+        # Calculate P&L percentage
+        unrealised_pct = (unrealised / cost_basis * 100) if cost_basis > 0 else 0
+
         by_holding.append({
             "ticker": safe_str(row.get('ticker')),
             "isin": safe_str(row.get('isin')),
@@ -1073,6 +1076,8 @@ def get_pnl_display(
             "realised_fmt": fmt_money(0),
             "unrealised": round(unrealised, 0),
             "unrealised_fmt": fmt_money(unrealised),
+            "unrealised_pct": round(unrealised_pct, 2),
+            "unrealised_pct_fmt": f"{unrealised_pct:.2f}%",
             "coupons": 0,
             "total": round(unrealised, 0),
             "total_fmt": fmt_money(unrealised)
