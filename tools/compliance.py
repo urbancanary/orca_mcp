@@ -204,23 +204,43 @@ def check_compliance(
     rules = []
 
     # Hard Rule 1: Max Single Issuer
+    # Get description for the max issuer's largest bond
+    max_issuer_holdings = holdings[holdings['ticker'] == max_position_ticker]
+    max_issuer_desc = max_position_ticker
+    if len(max_issuer_holdings) > 0:
+        largest_bond = max_issuer_holdings.sort_values('market_value', ascending=False).iloc[0]
+        bond_desc = largest_bond.get('description', '')
+        if bond_desc:
+            if len(max_issuer_holdings) > 1:
+                max_issuer_desc = f"{bond_desc} (+{len(max_issuer_holdings)-1} more)"
+            else:
+                max_issuer_desc = bond_desc
     rules.append(ComplianceRule(
         rule_type='Hard',
         name='Max Single Issuer (5/10/40)',
         limit=f'{max_single_issuer}%',
         current=f'{max_position:.1f}%',
         status='Pass' if max_position <= max_single_issuer else 'Fail',
-        details=str(max_position_ticker)
+        details=max_issuer_desc
     ))
 
     # Hard Rule 2: Sum of Issuers >5%
+    # List top issuers over 5%
+    issuers_5_desc = f'{num_issuers_over_5} issuers'
+    if num_issuers_over_5 > 0:
+        top_issuers = sorted(issuers_over_5.items(), key=lambda x: x[1], reverse=True)[:3]
+        issuer_names = [t[0] for t in top_issuers]
+        if num_issuers_over_5 > 3:
+            issuers_5_desc = f"{', '.join(issuer_names)} (+{num_issuers_over_5-3} more)"
+        else:
+            issuers_5_desc = ', '.join(issuer_names)
     rules.append(ComplianceRule(
         rule_type='Hard',
         name='Sum Issuers >5% (5/10/40)',
         limit=f'{max_sum_over_5}%',
         current=f'{sum_over_5_pct:.1f}%',
         status='Pass' if sum_over_5_pct <= max_sum_over_5 else 'Fail',
-        details=f'{num_issuers_over_5} issuers'
+        details=issuers_5_desc
     ))
 
     # Hard Rule 3: Cash Overdrawn
@@ -234,13 +254,22 @@ def check_compliance(
     ))
 
     # Hard Rule 4: NFA 3*+ Countries
+    # Show top violator description if any violations
+    nfa_details = 'All eligible'
+    if nfa_violations:
+        top_violator = max(nfa_violations, key=lambda x: x.get('pct_nav', 0))
+        top_desc = top_violator.get('description', top_violator.get('ticker', 'Unknown'))
+        if len(nfa_violations) > 1:
+            nfa_details = f"{top_desc} (+{len(nfa_violations)-1} more)"
+        else:
+            nfa_details = top_desc
     rules.append(ComplianceRule(
         rule_type='Hard',
         name='NFA 3*+ Countries',
         limit='100%',
         current=f'{100 - nfa_violation_pct:.1f}%',
         status='Pass' if nfa_compliant else 'Fail',
-        details=f'{len(nfa_violations)} ineligible' if nfa_violations else 'All eligible'
+        details=nfa_details
     ))
 
     # Soft Rule 1: Cash Level
