@@ -117,7 +117,10 @@ def get_rating_bucket(rating: str) -> str:
     """Classify rating as IG (Investment Grade) or HY (High Yield)"""
     if not rating:
         return "NR"
+    # S&P ratings
     ig_ratings = ['AAA', 'AA+', 'AA', 'AA-', 'A+', 'A', 'A-', 'BBB+', 'BBB', 'BBB-']
+    # Moody's equivalents (Aaa=AAA, Aa1=AA+, Aa2=AA, Aa3=AA-, A1=A+, A2=A, A3=A-, Baa1=BBB+, Baa2=BBB, Baa3=BBB-)
+    ig_ratings += ['AAA', 'AA1', 'AA2', 'AA3', 'A1', 'A2', 'A3', 'BAA1', 'BAA2', 'BAA3']
     return "IG" if rating.upper() in ig_ratings else "HY"
 
 
