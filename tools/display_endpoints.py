@@ -1403,7 +1403,8 @@ def get_dashboard_complete(
         Complete dashboard data with summary, allocation, totals, holdings, compliance
     """
     # Get portfolio dashboard data (summary, allocation, compliance)
-    dashboard = get_portfolio_dashboard(portfolio_id, include_staging, client_id)
+    # Note: get_portfolio_dashboard doesn't have include_staging param
+    dashboard = get_portfolio_dashboard(portfolio_id, client_id)
 
     # Get holdings display data (holdings array, totals)
     holdings_data = get_holdings_display(portfolio_id, include_staging, client_id)
