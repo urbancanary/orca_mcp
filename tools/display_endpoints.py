@@ -1068,6 +1068,7 @@ def get_pnl_display(
         by_holding.append({
             "ticker": safe_str(row.get('ticker')),
             "isin": safe_str(row.get('isin')),
+            "description": safe_str(row.get('description')),
             "cost_basis": round(cost_basis, 0),
             "cost_basis_fmt": fmt_money(cost_basis),
             "market_value": round(market_value, 0),
