@@ -329,8 +329,12 @@ def get_portfolio_dashboard(
             "as_of": datetime.utcnow().isoformat() + "Z"
         }
 
-    # Extract values from summary
+    # Extract values from summary, with fallback to holdings calculation
     total_bond_value = float(summary.get('total_market_value', 0) or 0)
+
+    # If summary has no market value, calculate from holdings
+    if total_bond_value == 0 and 'market_value' in holdings_df.columns:
+        total_bond_value = float(holdings_df['market_value'].sum())
 
     # Cash: try summary first, then calculate from transactions
     cash_balance = float(summary.get('cash', 0) or 0)

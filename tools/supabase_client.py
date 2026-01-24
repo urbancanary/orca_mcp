@@ -16,7 +16,7 @@ from datetime import datetime, date
 import requests
 
 # Configuration
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://ttkcqogfbklodhgfmiac.supabase.co")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://iociqthaxysqqqamonqa.supabase.co")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
 
 def _headers() -> Dict[str, str]:
@@ -56,56 +56,38 @@ def get_holdings(portfolio_id: str) -> List[Dict[str, Any]]:
     """
     Get current holdings for a portfolio.
 
-    Joins holdings_current with bonds for full details.
-    Returns display-ready format with formatted fields.
+    Uses current_holdings view (computed from transactions).
+    Bond reference data is not stored locally - it comes from Andy's MCPs.
+    Returns holdings with basic fields; enrichment happens in display layer.
     """
-    # Query holdings with bond details via Supabase's foreign key joins
+    # Query the current_holdings view
     params = {
         "portfolio_id": f"eq.{portfolio_id}",
-        "select": "*, bonds(*)"
     }
-    holdings = _get("holdings_current", params)
+    holdings = _get("current_holdings", params)
 
-    # Format for display
+    # Format for display (basic fields from view)
     result = []
     for h in holdings:
-        bond = h.get("bonds", {}) or {}
         par = float(h.get("par_amount", 0) or 0)
-        price = float(h.get("current_price", 0) or 0)
-        mv = float(h.get("market_value", 0) or 0)
-        cost = float(h.get("cost_basis", 0) or 0)
-        pnl = mv - cost if mv and cost else 0
-        pnl_pct = (pnl / cost * 100) if cost else 0
+        cost = float(h.get("total_cost_basis", 0) or 0)
 
         result.append({
             "isin": h.get("isin"),
-            "ticker": bond.get("ticker", ""),
-            "description": bond.get("description", ""),
-            "country": bond.get("country", ""),
-            "currency": bond.get("currency", "USD"),
-            "coupon": bond.get("coupon"),
-            "maturity_date": bond.get("maturity_date"),
-            "rating": bond.get("rating_sp") or bond.get("rating_moody"),
-            "sector": bond.get("sector"),
+            "ticker": h.get("ticker", ""),
+            "description": h.get("description", ""),
+            "country": h.get("country", ""),
 
             # Position
+            "par_amount": par,
             "face_value": par,
             "face_value_fmt": f"${par:,.0f}",
-            "avg_cost": float(h.get("avg_price", 0) or 0),
-            "current_price": price,
-            "current_price_fmt": f"{price:.2f}",
             "cost_basis": cost,
-            "market_value": mv,
-            "market_value_fmt": f"${mv:,.0f}",
+            "cost_basis_fmt": f"${cost:,.0f}",
 
-            # P&L
-            "unrealized_pnl": pnl,
-            "unrealized_pnl_fmt": f"${pnl:+,.0f}",
-            "unrealized_pnl_pct": pnl_pct,
-            "unrealized_pnl_pct_fmt": f"{pnl_pct:+.2f}%",
-
-            # Dates
-            "first_purchase_date": h.get("first_purchase_date"),
+            # Transaction info
+            "transaction_count": h.get("transaction_count", 0),
+            "first_transaction_date": h.get("first_transaction_date"),
             "last_transaction_date": h.get("last_transaction_date"),
         })
 
@@ -115,26 +97,32 @@ def get_holdings(portfolio_id: str) -> List[Dict[str, Any]]:
 def get_holdings_display(portfolio_id: str, include_staging: bool = False) -> Dict[str, Any]:
     """
     Get holdings formatted for display with weights and totals.
+
+    Note: Market values and prices must be enriched from Andy's MCPs.
+    This returns cost-basis weighted data.
     """
     holdings = get_holdings(portfolio_id)
 
-    # Calculate total market value for weights
-    total_mv = sum(h["market_value"] for h in holdings)
+    # Calculate total par value for weights (market value requires price enrichment)
+    total_par = sum(h.get("par_amount", 0) for h in holdings)
+    total_cost = sum(h.get("cost_basis", 0) for h in holdings)
 
-    # Add weights
+    # Add weights based on par value
     for h in holdings:
-        weight = (h["market_value"] / total_mv * 100) if total_mv else 0
+        weight = (h.get("par_amount", 0) / total_par * 100) if total_par else 0
         h["weight_pct"] = weight
         h["weight_pct_fmt"] = f"{weight:.1f}%"
 
-    # Sort by market value descending
-    holdings.sort(key=lambda x: x["market_value"], reverse=True)
+    # Sort by par value descending
+    holdings.sort(key=lambda x: x.get("par_amount", 0), reverse=True)
 
     return {
         "portfolio_id": portfolio_id,
         "holdings_count": len(holdings),
-        "total_market_value": total_mv,
-        "total_market_value_fmt": f"${total_mv:,.0f}",
+        "total_par_value": total_par,
+        "total_par_value_fmt": f"${total_par:,.0f}",
+        "total_cost_basis": total_cost,
+        "total_cost_basis_fmt": f"${total_cost:,.0f}",
         "holdings": holdings,
         "source": "supabase"
     }
@@ -217,6 +205,30 @@ def save_transaction(transaction: Dict[str, Any]) -> Dict[str, Any]:
     return {"success": True, "transaction": result}
 
 
+def update_transaction(transaction_id: int, updates: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Update an existing transaction.
+
+    Args:
+        transaction_id: The transaction ID to update
+        updates: Dictionary of fields to update
+    """
+    url = f"{SUPABASE_URL}/rest/v1/transactions"
+    headers = {**_headers(), "Prefer": "return=representation"}
+    params = {"id": f"eq.{transaction_id}"}
+
+    # Add updated_at timestamp
+    updates["updated_at"] = datetime.utcnow().isoformat()
+
+    resp = requests.patch(url, headers=headers, params=params, json=updates, timeout=10)
+
+    if resp.status_code == 200:
+        result = resp.json()
+        return {"success": True, "transaction": result[0] if result else None}
+    else:
+        return {"success": False, "error": f"Update failed: {resp.status_code} - {resp.text}"}
+
+
 # ==============================================
 # PORTFOLIO SUMMARY
 # ==============================================
@@ -231,6 +243,8 @@ def get_portfolio(portfolio_id: str) -> Dict[str, Any]:
 def get_portfolio_summary(portfolio_id: str) -> Dict[str, Any]:
     """
     Get portfolio summary with aggregated metrics.
+
+    Note: Market values and P&L require price enrichment from Andy's MCPs.
     """
     portfolio = get_portfolio(portfolio_id)
     holdings = get_holdings(portfolio_id)
@@ -238,20 +252,18 @@ def get_portfolio_summary(portfolio_id: str) -> Dict[str, Any]:
     if not portfolio:
         return {"error": f"Portfolio {portfolio_id} not found"}
 
-    # Aggregate metrics
-    total_mv = sum(h["market_value"] for h in holdings)
-    total_cost = sum(h["cost_basis"] for h in holdings)
-    total_pnl = total_mv - total_cost
-    cash = float(portfolio.get("cash_balance", 0) or 0)
+    # Aggregate metrics (par and cost - market value requires price enrichment)
+    total_par = sum(h.get("par_amount", 0) for h in holdings)
+    total_cost = sum(h.get("cost_basis", 0) for h in holdings)
 
-    # Country allocation
+    # Country allocation (by par value)
     country_alloc = {}
     for h in holdings:
-        country = h.get("country", "Unknown")
-        country_alloc[country] = country_alloc.get(country, 0) + h["market_value"]
+        country = h.get("country") or "Unknown"
+        country_alloc[country] = country_alloc.get(country, 0) + h.get("par_amount", 0)
 
     country_list = [
-        {"country": k, "value": v, "pct": v / total_mv * 100 if total_mv else 0}
+        {"country": k, "value": v, "pct": v / total_par * 100 if total_par else 0}
         for k, v in sorted(country_alloc.items(), key=lambda x: -x[1])
     ]
 
@@ -260,16 +272,10 @@ def get_portfolio_summary(portfolio_id: str) -> Dict[str, Any]:
         "name": portfolio.get("name"),
         "client_id": portfolio.get("client_id"),
 
-        "total_market_value": total_mv,
-        "total_market_value_fmt": f"${total_mv:,.0f}",
-        "cash_balance": cash,
-        "cash_balance_fmt": f"${cash:,.0f}",
-        "total_value": total_mv + cash,
-        "total_value_fmt": f"${total_mv + cash:,.0f}",
-
-        "total_cost": total_cost,
-        "unrealized_pnl": total_pnl,
-        "unrealized_pnl_pct": (total_pnl / total_cost * 100) if total_cost else 0,
+        "total_par_value": total_par,
+        "total_par_value_fmt": f"${total_par:,.0f}",
+        "total_cost_basis": total_cost,
+        "total_cost_basis_fmt": f"${total_cost:,.0f}",
 
         "holdings_count": len(holdings),
         "country_allocation": country_list,
@@ -282,6 +288,8 @@ def get_portfolio_dashboard(portfolio_id: str) -> Dict[str, Any]:
     """
     Get full dashboard data for a portfolio.
     Combines summary, holdings, and allocations.
+
+    Note: Market values and ratings require enrichment from Andy's MCPs.
     """
     holdings = get_holdings(portfolio_id)
     portfolio = get_portfolio(portfolio_id)
@@ -289,29 +297,18 @@ def get_portfolio_dashboard(portfolio_id: str) -> Dict[str, Any]:
     if not portfolio:
         return {"error": f"Portfolio {portfolio_id} not found"}
 
-    total_mv = sum(h["market_value"] for h in holdings)
-    cash = float(portfolio.get("cash_balance", 0) or 0)
+    total_par = sum(h.get("par_amount", 0) for h in holdings)
+    total_cost = sum(h.get("cost_basis", 0) for h in holdings)
 
-    # Country allocation
+    # Country allocation (by par value)
     country_agg = {}
     for h in holdings:
-        country = h.get("country", "Unknown")
-        country_agg[country] = country_agg.get(country, 0) + h["market_value"]
+        country = h.get("country") or "Unknown"
+        country_agg[country] = country_agg.get(country, 0) + h.get("par_amount", 0)
 
     by_country = [
-        {"country": k, "value": v, "pct": round(v / total_mv * 100, 1) if total_mv else 0}
+        {"country": k, "value": v, "pct": round(v / total_par * 100, 1) if total_par else 0}
         for k, v in sorted(country_agg.items(), key=lambda x: -x[1])
-    ]
-
-    # Rating allocation (placeholder - would need rating data)
-    rating_agg = {}
-    for h in holdings:
-        rating = h.get("rating") or "NR"
-        rating_agg[rating] = rating_agg.get(rating, 0) + h["market_value"]
-
-    by_rating = [
-        {"rating": k, "value": v, "pct": round(v / total_mv * 100, 1) if total_mv else 0}
-        for k, v in sorted(rating_agg.items(), key=lambda x: -x[1])
     ]
 
     return {
@@ -319,15 +316,13 @@ def get_portfolio_dashboard(portfolio_id: str) -> Dict[str, Any]:
         "name": portfolio.get("name"),
 
         "summary": {
-            "total_value": total_mv + cash,
-            "bond_value": total_mv,
-            "cash_balance": cash,
+            "total_par_value": total_par,
+            "total_cost_basis": total_cost,
             "holdings_count": len(holdings),
         },
 
         "allocation": {
             "by_country": by_country,
-            "by_rating": by_rating,
         },
 
         "source": "supabase"
@@ -337,32 +332,18 @@ def get_portfolio_dashboard(portfolio_id: str) -> Dict[str, Any]:
 # ==============================================
 # BONDS (Reference Data)
 # ==============================================
+# Note: Bond reference data comes from Andy's MCPs (static_data, pricing)
+# not from Guinness's Supabase. These functions are placeholders
+# that route to the data router for MCP access.
 
 def get_bond(isin: str) -> Dict[str, Any]:
-    """Get bond reference data by ISIN."""
-    params = {"isin": f"eq.{isin}"}
-    results = _get("bonds", params)
-    return results[0] if results else None
-
-
-def search_bonds(
-    country: str = None,
-    sector: str = None,
-    min_coupon: float = None,
-    max_coupon: float = None
-) -> List[Dict[str, Any]]:
-    """Search bonds by criteria."""
-    params = {}
-    if country:
-        params["country"] = f"eq.{country}"
-    if sector:
-        params["sector"] = f"eq.{sector}"
-    if min_coupon:
-        params["coupon"] = f"gte.{min_coupon}"
-    if max_coupon:
-        params["coupon"] = f"lte.{max_coupon}"
-
-    return _get("bonds", params)
+    """
+    Get bond reference data by ISIN.
+    Routes to Andy's MCPs for static bond data.
+    """
+    # Bond data comes from Andy's static data MCP, not local Supabase
+    from .cloudflare_d1 import get_analytics_for_isin
+    return get_analytics_for_isin(isin)
 
 
 # ==============================================

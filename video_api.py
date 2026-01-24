@@ -5,7 +5,7 @@ This exposes Orca's video gateway as HTTP endpoints, allowing remote
 clients (like Jess on Railway) to access video search and synthesis.
 
 Run locally:
-    uvicorn video_api:app --host 0.0.0.0 --port 8080
+    uvicorn video_api:app --host 0.0.0.0 --port 8090
 
 Endpoints:
     POST /video/search      - Search video transcripts
@@ -287,9 +287,9 @@ async def keyword_search(request: KeywordRequest):
 
 
 # =============================================================================
-# Run with: uvicorn video_api:app --host 0.0.0.0 --port 8080
+# Run with: uvicorn video_api:app --host 0.0.0.0 --port 8090
 # =============================================================================
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8090)))

@@ -130,6 +130,32 @@ def get_analytics_batch(isins: List[str], client_id: str = None) -> pd.DataFrame
     return d1_get_analytics(isins)
 
 
+def save_transaction(transaction: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Save a new transaction to appropriate backend.
+    """
+    portfolio_id = transaction.get('portfolio_id', '')
+
+    if uses_supabase(portfolio_id):
+        from .supabase_client import save_transaction as sb_save
+        return sb_save(transaction)
+    else:
+        from .cloudflare_d1 import save_staging_transaction as d1_save
+        return d1_save(transaction)
+
+
+def update_transaction(transaction_id: int, updates: Dict[str, Any], portfolio_id: str = None) -> Dict[str, Any]:
+    """
+    Update an existing transaction.
+    """
+    if portfolio_id and uses_supabase(portfolio_id):
+        from .supabase_client import update_transaction as sb_update
+        return sb_update(transaction_id, updates)
+    else:
+        from .cloudflare_d1 import update_transaction_d1
+        return update_transaction_d1(transaction_id, updates.get('status', 'confirmed'))
+
+
 # Export info about routing for debugging
 def get_routing_info() -> Dict[str, Any]:
     """Get current routing configuration."""
