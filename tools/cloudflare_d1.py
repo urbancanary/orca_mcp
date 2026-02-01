@@ -13,6 +13,13 @@ from typing import Any, Dict, List, Optional
 import pandas as pd
 import sys
 from pathlib import Path
+import asyncio
+import logging
+
+try:
+    import httpx
+except ImportError:
+    httpx = None
 
 # Add parent directory to path for imports
 SCRIPT_DIR = Path(__file__).parent.parent.resolve()
@@ -346,6 +353,51 @@ def get_holdings(portfolio_id: str = 'wnbf', staging_id: int = 1, client_id: str
         return pd.DataFrame()
 
 
+async def get_holdings_async(portfolio_id: str = 'wnbf', staging_id: int = 1, client_id: str = None) -> pd.DataFrame:
+    """
+    Get portfolio holdings from Cloudflare D1 (fast edge database) - async version
+
+    D1-First Architecture: User queries go to D1 for fast responses.
+    Data is synced from BigQuery via background job.
+
+    Args:
+        portfolio_id: Portfolio identifier (default: 'wnbf')
+        staging_id: 1=Live portfolio, 2=Staging portfolio
+        client_id: Client identifier (optional)
+
+    Returns:
+        DataFrame with holdings data
+    """
+    if httpx is None:
+        raise RuntimeError("httpx is required for async functions. Install with: pip install httpx")
+
+    logger = logging.getLogger(__name__)
+    url = f"{_get_d1_api_url()}/api/holdings?portfolio_id={portfolio_id}&staging_id={staging_id}"
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            data = response.json()
+            holdings = data.get('holdings', [])
+
+            if not holdings:
+                logger.warning(f"No holdings found in D1 for {portfolio_id} staging_id={staging_id}")
+                return pd.DataFrame()
+
+            df = pd.DataFrame(holdings)
+            logger.info(f"Fetched {len(df)} holdings from D1 (staging_id={staging_id})")
+            return df
+
+    except httpx.HTTPStatusError as e:
+        error_body = e.response.text
+        logger.error(f"Failed to fetch holdings from D1: {e.response.status_code} - {error_body}")
+        return pd.DataFrame()
+    except Exception as e:
+        logger.error(f"Failed to fetch holdings from D1: {str(e)}")
+        return pd.DataFrame()
+
+
 def get_holdings_summary(portfolio_id: str = 'wnbf', staging_id: int = 1, client_id: str = None) -> Dict[str, Any]:
     """
     Get portfolio summary stats from Cloudflare D1 (fast edge database)
@@ -374,6 +426,41 @@ def get_holdings_summary(portfolio_id: str = 'wnbf', staging_id: int = 1, client
         return {}
     except Exception as e:
         print(f"❌ Failed to fetch holdings summary from D1: {str(e)}")
+        return {}
+
+
+async def get_holdings_summary_async(portfolio_id: str = 'wnbf', staging_id: int = 1, client_id: str = None) -> Dict[str, Any]:
+    """
+    Get portfolio summary stats from Cloudflare D1 (fast edge database) - async version
+
+    Args:
+        portfolio_id: Portfolio identifier (default: 'wnbf')
+        staging_id: 1=Live portfolio, 2=Staging portfolio
+        client_id: Client identifier (optional)
+
+    Returns:
+        Dictionary with summary stats and country breakdown
+    """
+    if httpx is None:
+        raise RuntimeError("httpx is required for async functions. Install with: pip install httpx")
+
+    logger = logging.getLogger(__name__)
+    url = f"{_get_d1_api_url()}/api/holdings/summary?portfolio_id={portfolio_id}&staging_id={staging_id}"
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            data = response.json()
+            logger.info(f"Fetched portfolio summary from D1 (staging_id={staging_id})")
+            return data
+
+    except httpx.HTTPStatusError as e:
+        error_body = e.response.text
+        logger.error(f"Failed to fetch holdings summary from D1: {e.response.status_code} - {error_body}")
+        return {}
+    except Exception as e:
+        logger.error(f"Failed to fetch holdings summary from D1: {str(e)}")
         return {}
 
 
@@ -873,6 +960,50 @@ def get_transactions(portfolio_id: str = 'wnbf', client_id: str = None) -> pd.Da
         return pd.DataFrame()
 
 
+async def get_transactions_async(portfolio_id: str = 'wnbf', client_id: str = None) -> pd.DataFrame:
+    """
+    Get historical transactions from Cloudflare D1 (fast edge database) - async version
+
+    D1-First Architecture: User queries go to D1 for fast responses.
+    Data is synced from BigQuery via background job (4am daily refresh).
+
+    Args:
+        portfolio_id: Portfolio identifier (default: 'wnbf')
+        client_id: Client identifier (optional)
+
+    Returns:
+        DataFrame with historical transactions
+    """
+    if httpx is None:
+        raise RuntimeError("httpx is required for async functions. Install with: pip install httpx")
+
+    logger = logging.getLogger(__name__)
+    url = f"{_get_d1_api_url()}/api/transactions?portfolio_id={portfolio_id}"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            data = response.json()
+            transactions = data.get('transactions', [])
+
+            if not transactions:
+                logger.warning(f"No transactions found in D1 for {portfolio_id}")
+                return pd.DataFrame()
+
+            df = pd.DataFrame(transactions)
+            logger.info(f"Fetched {len(df)} transactions from D1")
+            return df
+
+    except httpx.HTTPStatusError as e:
+        error_body = e.response.text
+        logger.error(f"Failed to fetch transactions from D1: {e.response.status_code} - {error_body}")
+        return pd.DataFrame()
+    except Exception as e:
+        logger.error(f"Failed to fetch transactions from D1: {str(e)}")
+        return pd.DataFrame()
+
+
 def get_cashflows(portfolio_id: str = 'wnbf', client_id: str = None) -> pd.DataFrame:
     """
     Get cashflows (future coupon/principal payments) from Cloudflare D1
@@ -910,6 +1041,50 @@ def get_cashflows(portfolio_id: str = 'wnbf', client_id: str = None) -> pd.DataF
         return pd.DataFrame()
     except Exception as e:
         print(f"❌ Failed to fetch cashflows from D1: {str(e)}")
+        return pd.DataFrame()
+
+
+async def get_cashflows_async(portfolio_id: str = 'wnbf', client_id: str = None) -> pd.DataFrame:
+    """
+    Get cashflows (future coupon/principal payments) from Cloudflare D1 - async version
+
+    D1-First Architecture: User queries go to D1 for fast responses.
+    Data is synced from BigQuery via background job (4am daily refresh).
+
+    Args:
+        portfolio_id: Portfolio identifier (default: 'wnbf')
+        client_id: Client identifier (optional)
+
+    Returns:
+        DataFrame with cashflows (payment_date, payment_type, isin, etc.)
+    """
+    if httpx is None:
+        raise RuntimeError("httpx is required for async functions. Install with: pip install httpx")
+
+    logger = logging.getLogger(__name__)
+    url = f"{_get_d1_api_url()}/api/cashflows?portfolio_id={portfolio_id}"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            data = response.json()
+            cashflows = data.get('cashflows', [])
+
+            if not cashflows:
+                logger.warning(f"No cashflows found in D1 for {portfolio_id}")
+                return pd.DataFrame()
+
+            df = pd.DataFrame(cashflows)
+            logger.info(f"Fetched {len(df)} cashflows from D1")
+            return df
+
+    except httpx.HTTPStatusError as e:
+        error_body = e.response.text
+        logger.error(f"Failed to fetch cashflows from D1: {e.response.status_code} - {error_body}")
+        return pd.DataFrame()
+    except Exception as e:
+        logger.error(f"Failed to fetch cashflows from D1: {str(e)}")
         return pd.DataFrame()
 
 
