@@ -156,6 +156,83 @@ def update_transaction(transaction_id: int, updates: Dict[str, Any], portfolio_i
         return update_transaction_d1(transaction_id, updates.get('status', 'confirmed'))
 
 
+# =============================================================================
+# ASYNC VERSIONS (for parallel execution)
+# =============================================================================
+
+async def get_holdings_async(portfolio_id: str, staging_id: int = 1, client_id: str = None) -> pd.DataFrame:
+    """Async version of get_holdings. Routes to appropriate async backend."""
+    import numpy as np
+
+    if uses_supabase(portfolio_id):
+        from .supabase_client import get_holdings as sb_get_holdings
+        # Supabase client is sync - run in thread pool
+        import asyncio
+        holdings = await asyncio.to_thread(sb_get_holdings, portfolio_id)
+        if not holdings:
+            return pd.DataFrame()
+        df = pd.DataFrame(holdings)
+        column_map = {
+            'face_value': 'par_amount',
+            'current_price': 'price',
+            'yield_to_worst': 'ytw',
+            'duration': 'oad',
+            'spread': 'oas',
+        }
+        df = df.rename(columns={k: v for k, v in column_map.items() if k in df.columns})
+        df = df.replace([np.inf, -np.inf], 0)
+        df = df.fillna(0)
+        return df
+    else:
+        from .cloudflare_d1 import get_holdings_async as d1_get_holdings_async
+        return await d1_get_holdings_async(portfolio_id, staging_id, client_id)
+
+
+async def get_holdings_summary_async(portfolio_id: str, staging_id: int = 1, client_id: str = None) -> Dict[str, Any]:
+    """Async version of get_holdings_summary."""
+    if uses_supabase(portfolio_id):
+        from .supabase_client import get_portfolio_summary
+        import asyncio
+        summary = await asyncio.to_thread(get_portfolio_summary, portfolio_id)
+        return {
+            'total_market_value': summary.get('total_market_value', 0),
+            'cash': summary.get('cash_balance', 0),
+            'weighted_duration': 0,
+            'weighted_yield': 0,
+            'num_holdings': summary.get('holdings_count', 0),
+            'country_breakdown': {
+                c['country']: c['value']
+                for c in summary.get('country_allocation', [])
+            }
+        }
+    else:
+        from .cloudflare_d1 import get_holdings_summary_async as d1_get_summary_async
+        return await d1_get_summary_async(portfolio_id, staging_id, client_id)
+
+
+async def get_transactions_async(portfolio_id: str, client_id: str = None) -> pd.DataFrame:
+    """Async version of get_transactions."""
+    if uses_supabase(portfolio_id):
+        from .supabase_client import get_transactions as sb_get_transactions
+        import asyncio
+        txns = await asyncio.to_thread(sb_get_transactions, portfolio_id)
+        if not txns:
+            return pd.DataFrame()
+        return pd.DataFrame(txns)
+    else:
+        from .cloudflare_d1 import get_transactions_async as d1_get_transactions_async
+        return await d1_get_transactions_async(portfolio_id, client_id)
+
+
+async def get_cashflows_async(portfolio_id: str, client_id: str = None) -> pd.DataFrame:
+    """Async version of get_cashflows."""
+    if uses_supabase(portfolio_id):
+        return pd.DataFrame()
+    else:
+        from .cloudflare_d1 import get_cashflows_async as d1_get_cashflows_async
+        return await d1_get_cashflows_async(portfolio_id, client_id)
+
+
 # Export info about routing for debugging
 def get_routing_info() -> Dict[str, Any]:
     """Get current routing configuration."""

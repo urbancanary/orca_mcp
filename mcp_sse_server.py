@@ -22,6 +22,7 @@ Claude Desktop Configuration:
     URL: https://orca-mcp-production.up.railway.app/sse
 """
 
+import asyncio
 import os
 import sys
 import json
@@ -206,6 +207,10 @@ try:
         get_ratings_display,
         get_issuer_exposure,
         get_cash_event_horizon,
+        # Async versions
+        get_portfolio_dashboard_async,
+        get_holdings_display_async,
+        get_dashboard_complete_async,
     )
     from tools.external_mcps import (
         get_nfa_rating,
@@ -298,6 +303,10 @@ except ImportError:
         get_ratings_display,
         get_issuer_exposure,
         get_cash_event_horizon,
+        # Async versions
+        get_portfolio_dashboard_async,
+        get_holdings_display_async,
+        get_dashboard_complete_async,
     )
     from orca_mcp.tools.external_mcps import (
         get_nfa_rating,
@@ -1310,13 +1319,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "get_client_holdings":
             portfolio_id = arguments.get("portfolio_id", "wnbf")
             staging_id = arguments.get("staging_id", 1)  # Default to live
-            holdings = get_holdings_from_d1(portfolio_id, staging_id)
+            from tools.cloudflare_d1 import get_holdings_async as d1_holdings_async
+            holdings_df = await d1_holdings_async(portfolio_id, staging_id)
+            holdings = holdings_df.to_dict(orient='records') if not holdings_df.empty else []
             return [TextContent(type="text", text=json.dumps(holdings, indent=2, default=str))]
 
         elif name == "get_portfolio_summary":
             portfolio_id = arguments.get("portfolio_id", "wnbf")
             staging_id = arguments.get("staging_id", 1)
-            summary = get_holdings_summary_from_d1(portfolio_id, staging_id)
+            from tools.cloudflare_d1 import get_holdings_summary_async as d1_summary_async
+            summary = await d1_summary_async(portfolio_id, staging_id)
             return [TextContent(type="text", text=json.dumps(summary, indent=2, default=str))]
 
         elif name == "get_client_transactions":
@@ -1356,16 +1368,19 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "get_compliance_status":
             portfolio_id = arguments.get("portfolio_id", "wnbf")
             import pandas as pd
+            import asyncio
 
-            # Get holdings
-            holdings = get_holdings_from_d1(portfolio_id, staging_id=1)
-            if not holdings:
+            # Get holdings and summary in parallel
+            from tools.cloudflare_d1 import get_holdings_async as d1_holdings_async, get_holdings_summary_async as d1_summary_async
+            holdings_list, summary = await asyncio.gather(
+                d1_holdings_async(portfolio_id, staging_id=1),
+                d1_summary_async(portfolio_id, staging_id=1),
+            )
+
+            if holdings_list.empty:
                 return [TextContent(type="text", text=json.dumps({"error": "No holdings found"}))]
 
-            holdings_df = pd.DataFrame(holdings)
-
-            # Get cash from D1
-            summary = get_holdings_summary_from_d1(portfolio_id, staging_id=1)
+            holdings_df = holdings_list
             net_cash = summary.get('cash', 0)
 
             # Run compliance check
@@ -1381,10 +1396,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "check_trade_compliance_impact":
             portfolio_id = arguments.get("portfolio_id", "wnbf")
             import pandas as pd
+            import asyncio
 
-            holdings = get_holdings_from_d1(portfolio_id, staging_id=1)
-            holdings_df = pd.DataFrame(holdings) if holdings else pd.DataFrame()
-            summary = get_holdings_summary_from_d1(portfolio_id, staging_id=1)
+            # Get holdings and summary in parallel
+            from tools.cloudflare_d1 import get_holdings_async as d1_holdings_async, get_holdings_summary_async as d1_summary_async
+            holdings_df, summary = await asyncio.gather(
+                d1_holdings_async(portfolio_id, staging_id=1),
+                d1_summary_async(portfolio_id, staging_id=1),
+            )
             net_cash = summary.get('cash', 0)
 
             proposed_trade = {
@@ -1763,18 +1782,18 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "get_holdings_display":
             portfolio_id = arguments.get("portfolio_id", "wnbf")
             include_staging = arguments.get("include_staging", False)
-            result = get_holdings_display(portfolio_id, include_staging, client_id)
+            result = await get_holdings_display_async(portfolio_id, include_staging, client_id)
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         elif name == "get_portfolio_dashboard":
             portfolio_id = arguments.get("portfolio_id", "wnbf")
-            result = get_portfolio_dashboard(portfolio_id, client_id)
+            result = await get_portfolio_dashboard_async(portfolio_id, client_id)
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         elif name == "get_dashboard_complete":
             portfolio_id = arguments.get("portfolio_id", "wnbf")
             include_staging = arguments.get("include_staging", False)
-            result = get_dashboard_complete(portfolio_id, include_staging, client_id)
+            result = await get_dashboard_complete_async(portfolio_id, include_staging, client_id)
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         elif name == "calculate_trade_settlement":

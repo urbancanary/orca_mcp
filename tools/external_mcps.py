@@ -48,39 +48,70 @@ except ImportError:
 logger = logging.getLogger("orca-mcp.external")
 
 
-def _get_supabase_mcp_url() -> str:
-    """Get Supabase MCP URL from auth_mcp or environment."""
-    # Try auth_mcp first
-    if AUTH_CLIENT_AVAILABLE and get_api_key:
-        url = get_api_key("SUPABASE_MCP_URL", fallback_env=False, requester="orca-mcp")
-        if url:
-            return url
-    # Fallback to environment variable
-    return os.environ.get("SUPABASE_MCP_URL", "http://localhost:8001")
-
-# MCP Service URLs (supabase fetched lazily from auth_mcp)
-MCP_URLS = {
-    "nfa": "https://nfa-mcp.urbancanary.workers.dev",
-    "rating": "https://rating-mcp.urbancanary.workers.dev",
-    "country_mapping": "https://country-mapping-mcp.urbancanary.workers.dev",
-    "fred": "https://fred-mcp.urbancanary.workers.dev",
-    "sovereign_classification": "https://sovereign-classification-mcp.urbancanary.workers.dev",
-    "imf": "https://imf-mcp.urbancanary.workers.dev",
-    "worldbank": "https://worldbank-mcp.urbancanary.workers.dev",
-    "reasoning": os.environ.get("REASONING_MCP_URL", "https://reasoning-mcp-production-537b.up.railway.app"),
-    "sov_quasi": os.environ.get("SOV_QUASI_MCP_URL", "https://sov-quasi-list-production.up.railway.app"),
+# MCP Service URL defaults (auth-mcp key -> env var -> hardcoded fallback)
+_MCP_URL_DEFAULTS = {
+    "nfa": ("NFA_MCP_URL", "https://nfa-mcp.urbancanary.workers.dev"),
+    "rating": ("RATING_MCP_URL", "https://rating-mcp.urbancanary.workers.dev"),
+    "country_mapping": ("COUNTRY_MAPPING_MCP_URL", "https://country-mapping-mcp.urbancanary.workers.dev"),
+    "fred": ("FRED_MCP_URL", "https://fred-mcp.urbancanary.workers.dev"),
+    "sovereign_classification": ("SOVEREIGN_CLASSIFICATION_MCP_URL", "https://sovereign-classification-mcp.urbancanary.workers.dev"),
+    "imf": ("IMF_MCP_URL", "https://imf-mcp.urbancanary.workers.dev"),
+    "worldbank": ("WORLDBANK_MCP_URL", "https://worldbank-mcp.urbancanary.workers.dev"),
+    "reasoning": ("REASONING_MCP_URL", "https://reasoning-mcp-production-537b.up.railway.app"),
+    "sov_quasi": ("SOV_QUASI_MCP_URL", "https://sov-quasi-list-production.up.railway.app"),
+    "supabase": ("SUPABASE_MCP_URL", "http://localhost:8001"),
 }
 
-# Lazy-loaded URL (fetched from auth_mcp on first use)
-_supabase_mcp_url_cache = None
+# Cache for resolved URLs
+_url_cache: dict[str, str] = {}
 
-def _get_supabase_url() -> str:
-    """Get cached Supabase MCP URL."""
-    global _supabase_mcp_url_cache
-    if _supabase_mcp_url_cache is None:
-        _supabase_mcp_url_cache = _get_supabase_mcp_url()
-        logger.info(f"Supabase MCP URL: {_supabase_mcp_url_cache}")
-    return _supabase_mcp_url_cache
+
+def _get_mcp_url(service: str) -> str:
+    """
+    Get MCP service URL. Resolution order:
+    1. Cached value (from previous call)
+    2. auth-mcp (centralized URL management)
+    3. Environment variable
+    4. Hardcoded fallback
+    """
+    if service in _url_cache:
+        return _url_cache[service]
+
+    auth_key, fallback = _MCP_URL_DEFAULTS.get(service, (None, ""))
+    if not auth_key:
+        return fallback
+
+    # Try auth_mcp first
+    if AUTH_CLIENT_AVAILABLE and get_api_key:
+        try:
+            url = get_api_key(auth_key, fallback_env=False, requester="orca-mcp")
+            if url:
+                _url_cache[service] = url
+                logger.info(f"Resolved {service} URL from auth-mcp: {url}")
+                return url
+        except Exception as e:
+            logger.debug(f"auth-mcp lookup failed for {auth_key}: {e}")
+
+    # Fallback to environment variable, then hardcoded default
+    url = os.environ.get(auth_key, fallback)
+    _url_cache[service] = url
+    logger.info(f"Using fallback URL for {service}: {url}")
+    return url
+
+
+# MCP_URLS dict (lazy-resolved, backward compatible)
+class _LazyURLDict(dict):
+    """Dict that resolves URLs lazily via _get_mcp_url on access."""
+    def __getitem__(self, key):
+        return _get_mcp_url(key)
+
+    def get(self, key, default=None):
+        try:
+            return _get_mcp_url(key)
+        except Exception:
+            return default
+
+MCP_URLS = _LazyURLDict()
 
 TIMEOUT = 30  # seconds
 
@@ -1384,7 +1415,7 @@ def _call_supabase_mcp(tool: str, args: Dict[str, Any] = None) -> Dict[str, Any]
         Tool result or error dict
     """
     try:
-        url = f"{_get_supabase_url()}/call"
+        url = f"{_get_mcp_url('supabase')}/call"
         payload = {"tool": tool, "args": args or {}}
         response = _post(url, json_data=payload)
         response.raise_for_status()
@@ -1562,7 +1593,7 @@ async def _call_supabase_mcp_async(
         return _call_supabase_mcp(tool, args)
 
     try:
-        url = f"{_get_supabase_url()}/call"
+        url = f"{_get_mcp_url('supabase')}/call"
         payload = {"tool": tool, "args": args or {}}
 
         if client:
