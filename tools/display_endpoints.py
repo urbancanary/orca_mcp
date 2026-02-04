@@ -1338,6 +1338,58 @@ def get_ratings_display(
     }
 
 
+async def get_ratings_display_async(
+    portfolio_id: str = "wnbf",
+    rating_source: str = "sp_stub",
+    client_id: str = None
+) -> Dict[str, Any]:
+    """Async version of get_ratings_display. Uses async D1 call."""
+    holdings_df = await get_holdings_async(portfolio_id, staging_id=1, client_id=client_id)
+    if holdings_df.empty:
+        return {"distribution": [], "summary": {"ig_pct": 0, "hy_pct": 0, "avg_rating": "-", "avg_notches": 0}}
+
+    rating_col = ('rating_stub_sp' if rating_source == "sp_stub" and 'rating_stub_sp' in holdings_df.columns
+                  else 'rating_moodys' if rating_source == "moodys" and 'rating_moodys' in holdings_df.columns
+                  else 'rating_sp' if 'rating_sp' in holdings_df.columns else 'rating')
+    if rating_col not in holdings_df.columns:
+        return {"distribution": [], "summary": {"ig_pct": 0, "hy_pct": 0, "avg_rating": "-", "avg_notches": 0}}
+
+    total_mv = holdings_df['market_value'].sum() if 'market_value' in holdings_df.columns else 0
+    rating_notches = {'AAA': 1, 'AA+': 2, 'AA': 3, 'AA-': 4, 'A+': 5, 'A': 6, 'A-': 7,
+                      'BBB+': 8, 'BBB': 9, 'BBB-': 10, 'BB+': 11, 'BB': 12, 'BB-': 13,
+                      'B+': 14, 'B': 15, 'B-': 16, 'CCC+': 17, 'CCC': 18, 'CCC-': 19, 'CC': 20, 'C': 21, 'D': 22}
+
+    distribution = []
+    ig_total = hy_total = notches_sum = notches_weight = 0
+    for _, row in holdings_df.groupby(rating_col).agg({'market_value': 'sum', 'isin': 'count'}).reset_index().iterrows():
+        rating = safe_str(row[rating_col])
+        if not rating or rating == 'nan':
+            continue
+        mv, count = safe_float(row['market_value']), int(row['isin'])
+        pct = (mv / total_mv * 100) if total_mv else 0
+        bucket = get_rating_bucket(rating)
+        ig_total += mv if bucket == 'IG' else 0
+        hy_total += mv if bucket == 'HY' else 0
+        if rating.upper() in rating_notches:
+            notches_sum += rating_notches[rating.upper()] * mv
+            notches_weight += mv
+        distribution.append({"rating": rating, "pct": round(pct, 1), "pct_fmt": fmt_pct(pct),
+                             "value": round(mv, 0), "value_fmt": fmt_money(mv), "bucket": bucket, "count": count})
+
+    distribution.sort(key=lambda x: rating_notches.get(x['rating'].upper(), 99))
+    avg_notches = (notches_sum / notches_weight) if notches_weight else 0
+    avg_rating = next((r for r, n in rating_notches.items() if n >= avg_notches), "-")
+
+    return {
+        "distribution": distribution,
+        "summary": {"ig_pct": round((ig_total / total_mv * 100) if total_mv else 0, 1),
+                    "ig_pct_fmt": fmt_pct((ig_total / total_mv * 100) if total_mv else 0),
+                    "hy_pct": round((hy_total / total_mv * 100) if total_mv else 0, 1),
+                    "hy_pct_fmt": fmt_pct((hy_total / total_mv * 100) if total_mv else 0),
+                    "avg_rating": avg_rating, "avg_notches": round(avg_notches, 1)}
+    }
+
+
 # =============================================================================
 # 12. GET ISSUER EXPOSURE
 # =============================================================================
