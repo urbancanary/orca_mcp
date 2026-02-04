@@ -1370,7 +1370,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "get_compliance_status":
             portfolio_id = arguments.get("portfolio_id", "wnbf")
             import pandas as pd
-            import asyncio
 
             # Get holdings and summary in parallel
             from tools.cloudflare_d1 import get_holdings_async as d1_holdings_async, get_holdings_summary_async as d1_summary_async
@@ -1398,7 +1397,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "check_trade_compliance_impact":
             portfolio_id = arguments.get("portfolio_id", "wnbf")
             import pandas as pd
-            import asyncio
 
             # Get holdings and summary in parallel
             from tools.cloudflare_d1 import get_holdings_async as d1_holdings_async, get_holdings_summary_async as d1_summary_async
