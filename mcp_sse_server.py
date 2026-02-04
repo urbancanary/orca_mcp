@@ -211,6 +211,7 @@ try:
         get_portfolio_dashboard_async,
         get_holdings_display_async,
         get_dashboard_complete_async,
+        get_ratings_display_async,
     )
     from tools.external_mcps import (
         get_nfa_rating,
@@ -307,6 +308,7 @@ except ImportError:
         get_portfolio_dashboard_async,
         get_holdings_display_async,
         get_dashboard_complete_async,
+        get_ratings_display_async,
     )
     from orca_mcp.tools.external_mcps import (
         get_nfa_rating,
@@ -1610,7 +1612,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             country = arguments.get("country")
             if not country:
                 return [TextContent(type="text", text=json.dumps({"error": "country is required"}))]
-            result = get_nfa_rating(
+            result = await get_nfa_rating_async(
                 country,
                 arguments.get("year"),
                 arguments.get("history", False)
@@ -1618,11 +1620,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         elif name == "get_nfa_batch":
-            result = get_nfa_batch(arguments["countries"], arguments.get("year"))
+            result = await get_nfa_batch_async(arguments["countries"], arguments.get("year"))
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         elif name == "search_nfa_by_rating":
-            result = search_nfa_by_rating(
+            result = await asyncio.to_thread(
+                search_nfa_by_rating,
                 arguments.get("rating"),
                 arguments.get("min_rating"),
                 arguments.get("max_rating"),
@@ -1634,29 +1637,30 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         # EXTERNAL MCP - RATINGS
         # ============================================================================
         elif name == "get_credit_rating":
-            result = get_credit_rating(arguments["country"])
+            result = await get_credit_rating_async(arguments["country"])
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         elif name == "get_credit_ratings_batch":
-            result = get_credit_ratings_batch(arguments["countries"])
+            result = await get_credit_ratings_batch_async(arguments["countries"])
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         # ============================================================================
         # EXTERNAL MCP - COUNTRY MAPPING
         # ============================================================================
         elif name == "standardize_country":
-            result = standardize_country(arguments["country"])
+            result = await asyncio.to_thread(standardize_country, arguments["country"])
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         elif name == "get_country_info":
-            result = get_country_info(arguments["country"])
+            result = await asyncio.to_thread(get_country_info, arguments["country"])
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         # ============================================================================
         # EXTERNAL MCP - FRED
         # ============================================================================
         elif name == "get_fred_series":
-            result = get_fred_series(
+            result = await asyncio.to_thread(
+                get_fred_series,
                 arguments["series_id"],
                 arguments.get("start_date"),
                 arguments.get("end_date"),
@@ -1665,37 +1669,38 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         elif name == "get_fred_timeseries":
-            result = get_fred_timeseries(
+            result = await asyncio.to_thread(
+                get_fred_timeseries,
                 arguments["series_id"],
                 arguments.get("start_date", "2019-01-01")
             )
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         elif name == "search_fred_series":
-            result = search_fred_series(arguments["query"])
+            result = await asyncio.to_thread(search_fred_series, arguments["query"])
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         elif name == "get_treasury_rates":
-            result = get_treasury_rates()
+            result = await asyncio.to_thread(get_treasury_rates)
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         # ============================================================================
         # EXTERNAL MCP - SOVEREIGN CLASSIFICATION
         # ============================================================================
         elif name == "classify_issuer":
-            result = classify_issuer(arguments["isin"])
+            result = await asyncio.to_thread(classify_issuer, arguments["isin"])
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         elif name == "classify_issuers_batch":
-            result = classify_issuers_batch(arguments["isins"])
+            result = await asyncio.to_thread(classify_issuers_batch, arguments["isins"])
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         elif name == "filter_by_issuer_type":
-            result = filter_by_issuer_type(arguments["issuer_type"])
+            result = await asyncio.to_thread(filter_by_issuer_type, arguments["issuer_type"])
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         elif name == "get_issuer_summary":
-            result = get_issuer_summary(arguments["issuer"])
+            result = await asyncio.to_thread(get_issuer_summary, arguments["issuer"])
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         # ============================================================================
@@ -1854,7 +1859,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         elif name == "get_ratings_display":
             portfolio_id = arguments.get("portfolio_id", "wnbf")
             rating_source = arguments.get("rating_source", "sp_stub")
-            result = get_ratings_display(portfolio_id, rating_source, client_id)
+            result = await get_ratings_display_async(portfolio_id, rating_source, client_id)
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
         elif name == "get_issuer_exposure":
