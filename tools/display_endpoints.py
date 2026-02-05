@@ -148,6 +148,25 @@ def safe_float(value, default: float = 0.0) -> float:
         return default
 
 
+def _calc_weighted_averages(holdings_df: pd.DataFrame) -> tuple:
+    """Calculate weighted average duration and yield from holdings DataFrame.
+
+    Returns (weighted_duration, weighted_yield).
+    """
+    if holdings_df.empty or 'market_value' not in holdings_df.columns:
+        return 0.0, 0.0
+    total_mv = holdings_df['market_value'].sum()
+    if total_mv <= 0:
+        return 0.0, 0.0
+
+    dur_col = next((c for c in ['duration', 'oad'] if c in holdings_df.columns), None)
+    ytw_col = next((c for c in ['ytw', 'yield_to_worst'] if c in holdings_df.columns), None)
+
+    w_dur = float((holdings_df[dur_col].fillna(0) * holdings_df['market_value']).sum() / total_mv) if dur_col else 0.0
+    w_ytw = float((holdings_df[ytw_col].fillna(0) * holdings_df['market_value']).sum() / total_mv) if ytw_col else 0.0
+    return w_dur, w_ytw
+
+
 def safe_str(value, default: str = "") -> str:
     """Safely convert value to string, handling NaN and None"""
     if value is None:
@@ -368,9 +387,13 @@ def get_portfolio_dashboard(
     total_value = total_bond_value + cash_balance
     cash_pct = (cash_balance / total_value * 100) if total_value else 0
 
-    # Weighted averages from summary
+    # Weighted averages: prefer summary, fall back to calculating from holdings
     weighted_duration = float(summary.get('weighted_duration', 0) or 0)
     weighted_yield = float(summary.get('weighted_yield', 0) or 0)
+    if weighted_duration == 0 or weighted_yield == 0:
+        calc_dur, calc_ytw = _calc_weighted_averages(holdings_df)
+        weighted_duration = weighted_duration or calc_dur
+        weighted_yield = weighted_yield or calc_ytw
     num_holdings = int(summary.get('num_holdings', len(holdings_df)))
 
     # Build summary section
@@ -1547,6 +1570,10 @@ async def get_portfolio_dashboard_async(
     cash_pct = (cash_balance / total_value * 100) if total_value else 0
     weighted_duration = float(summary.get('weighted_duration', 0) or 0)
     weighted_yield = float(summary.get('weighted_yield', 0) or 0)
+    if weighted_duration == 0 or weighted_yield == 0:
+        calc_dur, calc_ytw = _calc_weighted_averages(holdings_df)
+        weighted_duration = weighted_duration or calc_dur
+        weighted_yield = weighted_yield or calc_ytw
     num_holdings = int(summary.get('num_holdings', len(holdings_df)))
 
     dashboard_summary = {
@@ -1797,6 +1824,10 @@ def _build_dashboard_from_data(
     cash_pct = (cash_balance / total_value * 100) if total_value else 0
     weighted_duration = float(summary.get('weighted_duration', 0) or 0)
     weighted_yield = float(summary.get('weighted_yield', 0) or 0)
+    if weighted_duration == 0 or weighted_yield == 0:
+        calc_dur, calc_ytw = _calc_weighted_averages(holdings_df)
+        weighted_duration = weighted_duration or calc_dur
+        weighted_yield = weighted_yield or calc_ytw
     num_holdings = int(summary.get('num_holdings', len(holdings_df)))
 
     dashboard_summary = {
