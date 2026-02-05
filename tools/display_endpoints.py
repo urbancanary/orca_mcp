@@ -167,6 +167,58 @@ def _calc_weighted_averages(holdings_df: pd.DataFrame) -> tuple:
     return w_dur, w_ytw
 
 
+# Rating notches lookup (shared across dashboard and ratings endpoints)
+RATING_NOTCHES = {
+    'AAA': 1, 'AA+': 2, 'AA': 3, 'AA-': 4, 'A+': 5, 'A': 6, 'A-': 7,
+    'BBB+': 8, 'BBB': 9, 'BBB-': 10, 'BB+': 11, 'BB': 12, 'BB-': 13,
+    'B+': 14, 'B': 15, 'B-': 16, 'CCC+': 17, 'CCC': 18, 'CCC-': 19,
+    'CC': 20, 'C': 21, 'D': 22
+}
+
+
+def _calc_avg_rating(holdings_df: pd.DataFrame) -> tuple:
+    """Calculate market-value-weighted average rating from holdings DataFrame.
+
+    Returns (avg_rating_str, avg_notches_float).
+    """
+    if holdings_df.empty or 'market_value' not in holdings_df.columns:
+        return "-", 0.0
+
+    rating_col = next((c for c in ['rating_sp', 'rating'] if c in holdings_df.columns), None)
+    if not rating_col:
+        return "-", 0.0
+
+    notches_sum = 0.0
+    notches_weight = 0.0
+    for _, row in holdings_df.iterrows():
+        rating = safe_str(row.get(rating_col, '')).upper()
+        mv = safe_float(row.get('market_value', 0))
+        if rating in RATING_NOTCHES and mv > 0:
+            notches_sum += RATING_NOTCHES[rating] * mv
+            notches_weight += mv
+
+    if notches_weight == 0:
+        return "-", 0.0
+
+    avg_notches = notches_sum / notches_weight
+    avg_rating = next((r for r, n in RATING_NOTCHES.items() if n >= avg_notches), "-")
+    return avg_rating, round(avg_notches, 1)
+
+
+def _calc_price_date(holdings_df: pd.DataFrame) -> str:
+    """Extract latest price_date from holdings DataFrame.
+
+    Returns formatted date string or "-" if not available.
+    """
+    if holdings_df.empty or 'price_date' not in holdings_df.columns:
+        return "-"
+    dates = holdings_df['price_date'].dropna()
+    dates = dates[dates.astype(str).str.strip() != '']
+    if dates.empty:
+        return "-"
+    return fmt_date(dates.max())
+
+
 def safe_str(value, default: str = "") -> str:
     """Safely convert value to string, handling NaN and None"""
     if value is None:
@@ -396,6 +448,10 @@ def get_portfolio_dashboard(
         weighted_yield = weighted_yield or calc_ytw
     num_holdings = int(summary.get('num_holdings', len(holdings_df)))
 
+    # Avg rating and price date from holdings
+    avg_rating, avg_notches = _calc_avg_rating(holdings_df)
+    price_date_fmt = _calc_price_date(holdings_df)
+
     # Build summary section
     dashboard_summary = {
         "total_value": total_value,
@@ -411,6 +467,9 @@ def get_portfolio_dashboard(
         "yield": weighted_yield,
         "yield_fmt": fmt_pct(weighted_yield),
         "num_holdings": num_holdings,
+        "avg_rating": avg_rating,
+        "avg_notches": avg_notches,
+        "price_date_fmt": price_date_fmt,
     }
 
     # Build allocation breakdowns
@@ -1326,9 +1385,7 @@ def get_ratings_display(
         return {"distribution": [], "summary": {"ig_pct": 0, "hy_pct": 0, "avg_rating": "-", "avg_notches": 0}}
 
     total_mv = holdings_df['market_value'].sum() if 'market_value' in holdings_df.columns else 0
-    rating_notches = {'AAA': 1, 'AA+': 2, 'AA': 3, 'AA-': 4, 'A+': 5, 'A': 6, 'A-': 7,
-                      'BBB+': 8, 'BBB': 9, 'BBB-': 10, 'BB+': 11, 'BB': 12, 'BB-': 13,
-                      'B+': 14, 'B': 15, 'B-': 16, 'CCC+': 17, 'CCC': 18, 'CCC-': 19, 'CC': 20, 'C': 21, 'D': 22}
+    rating_notches = RATING_NOTCHES
 
     distribution = []
     ig_total = hy_total = notches_sum = notches_weight = 0
@@ -1378,9 +1435,7 @@ async def get_ratings_display_async(
         return {"distribution": [], "summary": {"ig_pct": 0, "hy_pct": 0, "avg_rating": "-", "avg_notches": 0}}
 
     total_mv = holdings_df['market_value'].sum() if 'market_value' in holdings_df.columns else 0
-    rating_notches = {'AAA': 1, 'AA+': 2, 'AA': 3, 'AA-': 4, 'A+': 5, 'A': 6, 'A-': 7,
-                      'BBB+': 8, 'BBB': 9, 'BBB-': 10, 'BB+': 11, 'BB': 12, 'BB-': 13,
-                      'B+': 14, 'B': 15, 'B-': 16, 'CCC+': 17, 'CCC': 18, 'CCC-': 19, 'CC': 20, 'C': 21, 'D': 22}
+    rating_notches = RATING_NOTCHES
 
     distribution = []
     ig_total = hy_total = notches_sum = notches_weight = 0
@@ -1576,6 +1631,10 @@ async def get_portfolio_dashboard_async(
         weighted_yield = weighted_yield or calc_ytw
     num_holdings = int(summary.get('num_holdings', len(holdings_df)))
 
+    # Avg rating and price date from holdings
+    avg_rating, avg_notches = _calc_avg_rating(holdings_df)
+    price_date_fmt = _calc_price_date(holdings_df)
+
     dashboard_summary = {
         "total_value": total_value,
         "total_value_fmt": fmt_money(total_value, abbreviate=True),
@@ -1590,6 +1649,9 @@ async def get_portfolio_dashboard_async(
         "yield": weighted_yield,
         "yield_fmt": fmt_pct(weighted_yield),
         "num_holdings": num_holdings,
+        "avg_rating": avg_rating,
+        "avg_notches": avg_notches,
+        "price_date_fmt": price_date_fmt,
     }
 
     allocation = {"by_country": [], "by_rating": [], "by_sector": []}
@@ -1830,6 +1892,10 @@ def _build_dashboard_from_data(
         weighted_yield = weighted_yield or calc_ytw
     num_holdings = int(summary.get('num_holdings', len(holdings_df)))
 
+    # Avg rating and price date from holdings
+    avg_rating, avg_notches = _calc_avg_rating(holdings_df)
+    price_date_fmt = _calc_price_date(holdings_df)
+
     dashboard_summary = {
         "total_value": total_value,
         "total_value_fmt": fmt_money(total_value, abbreviate=True),
@@ -1844,6 +1910,9 @@ def _build_dashboard_from_data(
         "yield": weighted_yield,
         "yield_fmt": fmt_pct(weighted_yield),
         "num_holdings": num_holdings,
+        "avg_rating": avg_rating,
+        "avg_notches": avg_notches,
+        "price_date_fmt": price_date_fmt,
     }
 
     allocation = {"by_country": [], "by_rating": [], "by_sector": []}
