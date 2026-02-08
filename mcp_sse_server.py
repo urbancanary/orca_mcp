@@ -1339,21 +1339,21 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             start_date = arguments.get("start_date")
             end_date = arguments.get("end_date")
 
-            where_clauses = [f"portfolio_id = '{portfolio_id}'"]
-            if start_date:
-                where_clauses.append(f"transaction_date >= '{start_date}'")
-            if end_date:
-                where_clauses.append(f"transaction_date <= '{end_date}'")
+            from tools.cloudflare_d1 import get_transactions_async as d1_transactions_async
+            df = await d1_transactions_async(portfolio_id)
 
-            sql = f"""
-            SELECT * FROM transactions
-            WHERE {' AND '.join(where_clauses)}
-            ORDER BY transaction_date DESC
-            LIMIT {limit}
-            """
-            df = query_bigquery(sql, client_id)
-            # Replace NaN with None for JSON compatibility
-            records = json.loads(df.to_json(orient='records', date_format='iso'))
+            # Apply date filters on DataFrame
+            if not df.empty and 'transaction_date' in df.columns:
+                if start_date:
+                    df = df[df['transaction_date'] >= start_date]
+                if end_date:
+                    df = df[df['transaction_date'] <= end_date]
+
+            # Apply limit
+            if limit != -1:
+                df = df.head(limit)
+
+            records = json.loads(df.to_json(orient='records', date_format='iso')) if not df.empty else []
             return [TextContent(type="text", text=json.dumps(records, indent=2, default=str))]
 
         elif name == "get_portfolio_cash":

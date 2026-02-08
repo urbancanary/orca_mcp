@@ -1675,43 +1675,32 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
             )]
 
         elif name == "get_client_transactions":
-            portfolio_id = arguments["portfolio_id"]
+            portfolio_id = arguments.get("portfolio_id", "wnbf")
             limit = arguments.get("limit", 100)
             transaction_date = arguments.get("transaction_date")
             start_date = arguments.get("start_date")
             end_date = arguments.get("end_date")
             transaction_type = arguments.get("transaction_type")
 
-            # Build WHERE clauses
-            where_clauses = [f"portfolio_id = '{portfolio_id}'"]
+            from tools.cloudflare_d1 import get_transactions
+            df = get_transactions(portfolio_id)
 
-            if transaction_date:
-                where_clauses.append(f"transaction_date = '{transaction_date}'")
+            # Apply filters on DataFrame
+            if not df.empty:
+                if transaction_date and 'transaction_date' in df.columns:
+                    df = df[df['transaction_date'] == transaction_date]
+                if start_date and 'transaction_date' in df.columns:
+                    df = df[df['transaction_date'] >= start_date]
+                if end_date and 'transaction_date' in df.columns:
+                    df = df[df['transaction_date'] <= end_date]
+                if transaction_type and 'transaction_type' in df.columns:
+                    df = df[df['transaction_type'] == transaction_type]
 
-            if start_date:
-                where_clauses.append(f"transaction_date >= '{start_date}'")
+            # Apply limit
+            if limit != -1:
+                df = df.head(limit)
 
-            if end_date:
-                where_clauses.append(f"transaction_date <= '{end_date}'")
-
-            if transaction_type:
-                where_clauses.append(f"transaction_type = '{transaction_type}'")
-
-            where_clause = " AND ".join(where_clauses)
-
-            # Build LIMIT clause (-1 means no limit)
-            limit_clause = "" if limit == -1 else f"LIMIT {limit}"
-
-            sql = f"""
-            SELECT *
-            FROM transactions
-            WHERE {where_clause}
-            ORDER BY transaction_date DESC, settlement_date DESC
-            {limit_clause}
-            """
-
-            df = query_bigquery(sql, client_id)
-            result = df.to_dict(orient='records')
+            result = df.to_dict(orient='records') if not df.empty else []
 
             return [TextContent(
                 type="text",
