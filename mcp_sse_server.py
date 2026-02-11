@@ -111,8 +111,8 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-# D1 API URL for fast edge queries
-D1_API_URL = "https://portfolio-optimizer-mcp.urbancanary.workers.dev"
+# D1 API URL for fast edge queries (Worker URL, never exposed to frontend)
+D1_API_URL = os.getenv("ORCA_URL", "https://portfolio-optimizer-mcp.urbancanary.workers.dev")
 
 # Set up logging early
 logging.basicConfig(level=logging.INFO)
@@ -2078,6 +2078,77 @@ async def handle_sse(request: Request):
             mcp_server.create_initialization_options()
         )
     return Response()
+
+
+# =============================================================================
+# PROXY PASS-THROUGH: Forward /proxy/* and /api/* to Worker
+# Keeps Worker URL hidden from frontend — all traffic routes through Orca
+# =============================================================================
+
+@app.api_route("/proxy/{service}/{path:path}", methods=["GET", "POST", "PUT", "DELETE"], tags=["Proxy"])
+async def proxy_to_worker(service: str, path: str, request: Request):
+    """Forward proxy requests to Cloudflare Worker."""
+    target_url = f"{D1_API_URL}/proxy/{service}/{path}"
+    if request.query_params:
+        target_url += f"?{request.query_params}"
+    try:
+        body = await request.body() if request.method in ("POST", "PUT") else None
+        fwd_headers = {"Content-Type": "application/json"}
+        client_id = request.headers.get("X-Client-ID")
+        if client_id:
+            fwd_headers["X-Client-ID"] = client_id
+
+        req = urllib.request.Request(
+            target_url,
+            data=body,
+            headers=fwd_headers,
+            method=request.method
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp_body = resp.read()
+            return Response(
+                content=resp_body,
+                status_code=resp.status,
+                media_type=resp.headers.get("Content-Type", "application/json")
+            )
+    except urllib.error.HTTPError as e:
+        return Response(content=e.read(), status_code=e.code, media_type="application/json")
+    except Exception as e:
+        logger.error(f"Proxy error /{service}/{path}: {e}")
+        return JSONResponse({"error": str(e)}, status_code=502)
+
+
+@app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "DELETE"], tags=["Proxy"])
+async def proxy_api_to_worker(path: str, request: Request):
+    """Forward /api/* requests to Cloudflare Worker (cashflows, auth, etc.)."""
+    target_url = f"{D1_API_URL}/api/{path}"
+    if request.query_params:
+        target_url += f"?{request.query_params}"
+    try:
+        body = await request.body() if request.method in ("POST", "PUT") else None
+        fwd_headers = {"Content-Type": "application/json"}
+        client_id = request.headers.get("X-Client-ID")
+        if client_id:
+            fwd_headers["X-Client-ID"] = client_id
+
+        req = urllib.request.Request(
+            target_url,
+            data=body,
+            headers=fwd_headers,
+            method=request.method
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            resp_body = resp.read()
+            return Response(
+                content=resp_body,
+                status_code=resp.status,
+                media_type=resp.headers.get("Content-Type", "application/json")
+            )
+    except urllib.error.HTTPError as e:
+        return Response(content=e.read(), status_code=e.code, media_type="application/json")
+    except Exception as e:
+        logger.error(f"Proxy API error /api/{path}: {e}")
+        return JSONResponse({"error": str(e)}, status_code=502)
 
 
 # Mount SSE message handler for MCP protocol
