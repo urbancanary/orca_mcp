@@ -104,6 +104,14 @@ ENABLED_TOOLS = {
     "get_priority_countries",        # Countries needing research by priority
     "check_country_priority",        # Check specific country's priority/status
     "get_pending_reports",           # Summary of reports needing work
+
+    # Phase 13: Microsoft 365 (per-user OAuth)
+    "search_m365_emails",            # Search Outlook emails
+    "get_m365_calendar",             # Calendar events in date range
+    "search_m365_files",             # OneDrive file search
+    "search_m365_sharepoint",        # SharePoint sites/docs search
+    "search_m365_teams",             # Teams message search
+    "get_m365_status",               # Check M365 connection status
 }
 
 # Add current directory to path for imports
@@ -257,6 +265,13 @@ try:
         get_priority_countries,
         check_country_priority,
         get_pending_sov_quasi_reports,
+        # M365 MCP
+        search_m365_emails_async,
+        get_m365_calendar_async,
+        search_m365_files_async,
+        search_m365_sharepoint_async,
+        search_m365_teams_async,
+        get_m365_status_async,
     )
     from tools.sovereign_reports import (
         get_sovereign_report,
@@ -1235,6 +1250,83 @@ INTERNAL_TOOLS = [
                 "required": []
             }
         ),
+
+        # ============================================================================
+        # MICROSOFT 365 (per-user OAuth - email, calendar, files, sharepoint, teams)
+        # ============================================================================
+        Tool(
+            name="search_m365_emails",
+            description="Search the user's Outlook emails. Requires M365 connection.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "user_code": {"type": "string", "description": "User identifier for M365 auth"},
+                    "query": {"type": "string", "description": "Search query (e.g., 'quarterly report', 'from:john')"},
+                    "top": {"type": "integer", "description": "Max results (default 10)"}
+                },
+                "required": ["user_code", "query"]
+            }
+        ),
+        Tool(
+            name="get_m365_calendar",
+            description="Get the user's calendar events for a date range. Requires M365 connection.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "user_code": {"type": "string", "description": "User identifier for M365 auth"},
+                    "start_date": {"type": "string", "description": "Start date (ISO 8601, e.g., '2026-02-12T00:00:00Z')"},
+                    "end_date": {"type": "string", "description": "End date (ISO 8601, e.g., '2026-02-13T23:59:59Z')"}
+                },
+                "required": ["user_code", "start_date", "end_date"]
+            }
+        ),
+        Tool(
+            name="search_m365_files",
+            description="Search the user's OneDrive files. Requires M365 connection.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "user_code": {"type": "string", "description": "User identifier for M365 auth"},
+                    "query": {"type": "string", "description": "File search query"}
+                },
+                "required": ["user_code", "query"]
+            }
+        ),
+        Tool(
+            name="search_m365_sharepoint",
+            description="Search SharePoint sites and documents. Requires M365 connection.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "user_code": {"type": "string", "description": "User identifier for M365 auth"},
+                    "query": {"type": "string", "description": "Search query"}
+                },
+                "required": ["user_code", "query"]
+            }
+        ),
+        Tool(
+            name="search_m365_teams",
+            description="Search Teams messages and channels. Requires M365 connection.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "user_code": {"type": "string", "description": "User identifier for M365 auth"},
+                    "query": {"type": "string", "description": "Search query"}
+                },
+                "required": ["user_code", "query"]
+            }
+        ),
+        Tool(
+            name="get_m365_status",
+            description="Check if a user is connected to Microsoft 365. Returns connection status and email.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "user_code": {"type": "string", "description": "User identifier to check"}
+                },
+                "required": ["user_code"]
+            }
+        ),
     ]
 
 
@@ -1946,6 +2038,43 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = get_pending_sov_quasi_reports()
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
+        # ============================================================================
+        # MICROSOFT 365
+        # ============================================================================
+        elif name == "search_m365_emails":
+            result = await search_m365_emails_async(
+                arguments["user_code"], arguments["query"], arguments.get("top", 10)
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "get_m365_calendar":
+            result = await get_m365_calendar_async(
+                arguments["user_code"], arguments["start_date"], arguments["end_date"]
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "search_m365_files":
+            result = await search_m365_files_async(
+                arguments["user_code"], arguments["query"]
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "search_m365_sharepoint":
+            result = await search_m365_sharepoint_async(
+                arguments["user_code"], arguments["query"]
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "search_m365_teams":
+            result = await search_m365_teams_async(
+                arguments["user_code"], arguments["query"]
+            )
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
+        elif name == "get_m365_status":
+            result = await get_m365_status_async(arguments["user_code"])
+            return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
@@ -2085,6 +2214,19 @@ async def handle_sse(request: Request):
 # Keeps Worker URL hidden from frontend — all traffic routes through Orca
 # =============================================================================
 
+def _proxy_headers(request: Request) -> dict:
+    """Build headers for proxied requests to Worker."""
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Orca-MCP/3.2",
+        "Accept": "application/json",
+    }
+    client_id = request.headers.get("X-Client-ID")
+    if client_id:
+        headers["X-Client-ID"] = client_id
+    return headers
+
+
 @app.api_route("/proxy/{service}/{path:path}", methods=["GET", "POST", "PUT", "DELETE"], tags=["Proxy"])
 async def proxy_to_worker(service: str, path: str, request: Request):
     """Forward proxy requests to Cloudflare Worker."""
@@ -2093,15 +2235,10 @@ async def proxy_to_worker(service: str, path: str, request: Request):
         target_url += f"?{request.query_params}"
     try:
         body = await request.body() if request.method in ("POST", "PUT") else None
-        fwd_headers = {"Content-Type": "application/json"}
-        client_id = request.headers.get("X-Client-ID")
-        if client_id:
-            fwd_headers["X-Client-ID"] = client_id
-
         req = urllib.request.Request(
             target_url,
             data=body,
-            headers=fwd_headers,
+            headers=_proxy_headers(request),
             method=request.method
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -2126,15 +2263,10 @@ async def proxy_api_to_worker(path: str, request: Request):
         target_url += f"?{request.query_params}"
     try:
         body = await request.body() if request.method in ("POST", "PUT") else None
-        fwd_headers = {"Content-Type": "application/json"}
-        client_id = request.headers.get("X-Client-ID")
-        if client_id:
-            fwd_headers["X-Client-ID"] = client_id
-
         req = urllib.request.Request(
             target_url,
             data=body,
-            headers=fwd_headers,
+            headers=_proxy_headers(request),
             method=request.method
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
