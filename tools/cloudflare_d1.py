@@ -1032,6 +1032,9 @@ def get_cashflows(portfolio_id: str = 'wnbf', client_id: str = None) -> pd.DataF
                 return pd.DataFrame()
 
             df = pd.DataFrame(cashflows)
+            # Normalise: Worker returns 'date' (aliased from payment_date), display code expects 'payment_date'
+            if 'date' in df.columns and 'payment_date' not in df.columns:
+                df['payment_date'] = df['date']
             print(f"✅ Fetched {len(df)} cashflows from D1")
             return df
 
@@ -1076,6 +1079,9 @@ async def get_cashflows_async(portfolio_id: str = 'wnbf', client_id: str = None)
                 return pd.DataFrame()
 
             df = pd.DataFrame(cashflows)
+            # Normalise: Worker returns 'date' (aliased from payment_date), display code expects 'payment_date'
+            if 'date' in df.columns and 'payment_date' not in df.columns:
+                df['payment_date'] = df['date']
             logger.info(f"Fetched {len(df)} cashflows from D1")
             return df
 

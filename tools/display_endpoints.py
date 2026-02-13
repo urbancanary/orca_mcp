@@ -1295,7 +1295,8 @@ def get_cash_event_horizon(
             future.append({
                 "date": fmt_date(row.get('payment_date')),
                 "type": safe_str(row.get('payment_type', 'COUPON')).upper(),
-                "ticker": safe_str(row.get('ticker')), "isin": safe_str(row.get('isin')),
+                "ticker": safe_str(row.get('ticker') or row.get('bond_description', '')),
+                "isin": safe_str(row.get('isin')),
                 "amount": round(amount, 0), "amount_fmt": fmt_money(amount),
                 "projected_balance": round(projected_balance, 0), "projected_balance_fmt": fmt_money(projected_balance)
             })
