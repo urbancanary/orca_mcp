@@ -1746,8 +1746,8 @@ def _format_holdings_display(holdings_df: pd.DataFrame) -> Dict[str, Any]:
         total_unrealized_pnl += unrealized_pnl
 
         ytw = safe_float(row.get('ytw', 0))
-        oad = safe_float(row.get('oad', 0))
-        oas = safe_float(row.get('oas', 0))
+        oad = safe_float(row.get('oad', 0) or row.get('duration', 0))
+        oas = safe_float(row.get('oas', 0) or row.get('spread', 0))
 
         weight = (market_value / total_market_value * 100) if total_market_value else 0
         weighted_yield += ytw * weight / 100
