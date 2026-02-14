@@ -112,6 +112,12 @@ ENABLED_TOOLS = {
     "search_m365_sharepoint",        # SharePoint sites/docs search
     "search_m365_teams",             # Teams message search
     "get_m365_status",               # Check M365 connection status
+
+    # Phase 14: SEC EDGAR Filing Analysis
+    "edgar_search_company",          # Find company by ticker/name/CIK
+    "edgar_filing_section",          # Extract filing section (risk factors, MD&A, etc.)
+    "edgar_financials",              # XBRL financial statements
+    "edgar_search_filings",          # Full-text search across EDGAR
 }
 
 # Add current directory to path for imports
@@ -281,6 +287,12 @@ try:
         query_sovereign_report,
         compare_sovereign_reports,
     )
+    from tools.edgar_gateway import (
+        edgar_search_company,
+        edgar_filing_section,
+        edgar_financials,
+        edgar_search_filings,
+    )
     from client_config import get_client_config
 except ImportError:
     from orca_mcp.tools.data_access import query_bigquery
@@ -377,6 +389,12 @@ except ImportError:
         search_sovereign_reports,
         query_sovereign_report,
         compare_sovereign_reports,
+    )
+    from orca_mcp.tools.edgar_gateway import (
+        edgar_search_company,
+        edgar_filing_section,
+        edgar_financials,
+        edgar_search_filings,
     )
     from orca_mcp.client_config import get_client_config
 
@@ -1327,6 +1345,65 @@ INTERNAL_TOOLS = [
                 "required": ["user_code"]
             }
         ),
+
+        # ============================================================================
+        # SEC EDGAR FILING ANALYSIS
+        # ============================================================================
+        Tool(
+            name="edgar_search_company",
+            description="Search SEC EDGAR for a company by ticker symbol, company name, or CIK number. Returns company profile and recent filings list.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Ticker (AAPL), company name (Apple Inc), or CIK (320193)"}
+                },
+                "required": ["query"]
+            }
+        ),
+        Tool(
+            name="edgar_filing_section",
+            description="Extract a specific section from a company's SEC filing (10-K or 10-Q). Sections: risk_factors, mda, business, financial_statements, legal_proceedings, market_risk, controls.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "ticker": {"type": "string", "description": "Company ticker symbol (e.g., AAPL, JPM, AMZN)"},
+                    "section": {"type": "string", "description": "Section to extract", "enum": ["risk_factors", "mda", "business", "financial_statements", "legal_proceedings", "market_risk", "controls"]},
+                    "form_type": {"type": "string", "description": "Filing type (default: 10-K)", "enum": ["10-K", "10-Q"]},
+                    "filing_date": {"type": "string", "description": "Specific filing date (YYYY-MM-DD). If omitted, uses most recent."}
+                },
+                "required": ["ticker", "section"]
+            }
+        ),
+        Tool(
+            name="edgar_financials",
+            description="Get XBRL financial statement data from SEC filings. Returns formatted income statement, balance sheet, or cash flow statement.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "ticker": {"type": "string", "description": "Company ticker symbol (e.g., AAPL, JPM, AMZN)"},
+                    "statement": {"type": "string", "description": "Statement type", "enum": ["income", "balance", "cashflow", "all"]},
+                    "periods": {"type": "integer", "description": "Number of periods (default: 4)"},
+                    "annual": {"type": "boolean", "description": "True for annual (10-K), False for quarterly (10-Q)"}
+                },
+                "required": ["ticker"]
+            }
+        ),
+        Tool(
+            name="edgar_search_filings",
+            description="Full-text search across all SEC EDGAR filings. Find filings mentioning specific topics, companies, or terms.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Search terms. Supports boolean (AI AND revenue), exact phrases (\"artificial intelligence\")."},
+                    "form_type": {"type": "string", "description": "Filter by form type (10-K, 10-Q, 8-K, etc.)"},
+                    "ticker": {"type": "string", "description": "Filter by company ticker"},
+                    "date_from": {"type": "string", "description": "Start date (YYYY-MM-DD)"},
+                    "date_to": {"type": "string", "description": "End date (YYYY-MM-DD)"},
+                    "max_results": {"type": "integer", "description": "Max results (default: 10, max: 20)"}
+                },
+                "required": ["query"]
+            }
+        ),
     ]
 
 
@@ -2075,6 +2152,51 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await get_m365_status_async(arguments["user_code"])
             return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
 
+        # ============================================================================
+        # SEC EDGAR FILING ANALYSIS
+        # ============================================================================
+        elif name == "edgar_search_company":
+            query = arguments.get("query")
+            if not query:
+                return [TextContent(type="text", text="ERROR: query is required")]
+            result = await asyncio.to_thread(edgar_search_company, query)
+            return [TextContent(type="text", text=result)]
+
+        elif name == "edgar_filing_section":
+            ticker = arguments.get("ticker")
+            section = arguments.get("section")
+            if not ticker or not section:
+                return [TextContent(type="text", text="ERROR: ticker and section are required")]
+            form_type = arguments.get("form_type", "10-K")
+            filing_date = arguments.get("filing_date")
+            result = await asyncio.to_thread(edgar_filing_section, ticker, section, form_type, filing_date)
+            return [TextContent(type="text", text=result)]
+
+        elif name == "edgar_financials":
+            ticker = arguments.get("ticker")
+            if not ticker:
+                return [TextContent(type="text", text="ERROR: ticker is required")]
+            statement = arguments.get("statement", "income")
+            periods = arguments.get("periods", 4)
+            annual = arguments.get("annual", True)
+            result = await asyncio.to_thread(edgar_financials, ticker, statement, periods, annual)
+            return [TextContent(type="text", text=result)]
+
+        elif name == "edgar_search_filings":
+            query = arguments.get("query")
+            if not query:
+                return [TextContent(type="text", text="ERROR: query is required")]
+            result = await asyncio.to_thread(
+                edgar_search_filings,
+                query,
+                arguments.get("form_type"),
+                arguments.get("ticker"),
+                arguments.get("date_from"),
+                arguments.get("date_to"),
+                arguments.get("max_results", 10),
+            )
+            return [TextContent(type="text", text=result)]
+
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
@@ -2087,7 +2209,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 app = FastAPI(
     title="Orca MCP",
     description="Portfolio Data Gateway - Natural language interface to financial data",
-    version="3.2.0",
+    version="3.2.1",
     docs_url="/docs",      # Swagger UI at /docs
     redoc_url="/redoc",    # ReDoc at /redoc
 )
