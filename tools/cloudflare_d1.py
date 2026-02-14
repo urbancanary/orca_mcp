@@ -32,6 +32,22 @@ except ImportError:
     from client_config import get_client_config
 
 
+# Cloudflare bot protection blocks Python-urllib default User-Agent (error 1010).
+# All urllib requests must use this header set.
+_URLLIB_HEADERS = {
+    "User-Agent": "Orca-MCP/3.2",
+    "Accept": "application/json",
+}
+
+
+def _make_request(url: str, data: bytes = None, method: str = None) -> urllib.request.Request:
+    """Create a urllib Request with headers that pass Cloudflare bot protection."""
+    req = urllib.request.Request(url, data=data, method=method)
+    for k, v in _URLLIB_HEADERS.items():
+        req.add_header(k, v)
+    return req
+
+
 def get_orca_url() -> str:
     """
     Get the Orca MCP API URL.
@@ -287,7 +303,7 @@ def get_watchlist(client_id: str = None) -> pd.DataFrame:
     pricing_url = os.getenv('GA10_PRICING_URL', 'https://ga10-pricing.urbancanary.workers.dev')
     url = f"{pricing_url}/watchlist"
 
-    req = urllib.request.Request(url)
+    req = _make_request(url)
 
     try:
         with urllib.request.urlopen(req, timeout=15) as response:
@@ -329,7 +345,7 @@ def get_holdings(portfolio_id: str = 'wnbf', staging_id: int = 1, client_id: str
     """
     url = f"{_get_d1_api_url()}/api/holdings?portfolio_id={portfolio_id}&staging_id={staging_id}"
 
-    req = urllib.request.Request(url)
+    req = _make_request(url)
 
     try:
         with urllib.request.urlopen(req, timeout=10) as response:
@@ -412,7 +428,7 @@ def get_holdings_summary(portfolio_id: str = 'wnbf', staging_id: int = 1, client
     """
     url = f"{_get_d1_api_url()}/api/holdings/summary?portfolio_id={portfolio_id}&staging_id={staging_id}"
 
-    req = urllib.request.Request(url)
+    req = _make_request(url)
 
     try:
         with urllib.request.urlopen(req, timeout=10) as response:
@@ -534,7 +550,7 @@ def get_analytics(limit: int = 5000, offset: int = 0) -> pd.DataFrame:
     """
     url = f"{_get_d1_api_url()}/api/analytics?limit={limit}&offset={offset}"
 
-    req = urllib.request.Request(url)
+    req = _make_request(url)
 
     try:
         with urllib.request.urlopen(req, timeout=15) as response:
@@ -646,7 +662,7 @@ def search_bonds(
 
     url = f"{_get_d1_api_url()}/api/analytics/search?{'&'.join(params)}"
 
-    req = urllib.request.Request(url)
+    req = _make_request(url)
 
     try:
         with urllib.request.urlopen(req, timeout=15) as response:
@@ -936,7 +952,7 @@ def get_transactions(portfolio_id: str = 'wnbf', client_id: str = None) -> pd.Da
     """
     url = f"{_get_d1_api_url()}/api/transactions?portfolio_id={portfolio_id}"
 
-    req = urllib.request.Request(url)
+    req = _make_request(url)
 
     try:
         with urllib.request.urlopen(req, timeout=15) as response:
@@ -1020,7 +1036,7 @@ def get_cashflows(portfolio_id: str = 'wnbf', client_id: str = None) -> pd.DataF
     """
     url = f"{_get_d1_api_url()}/api/cashflows?portfolio_id={portfolio_id}"
 
-    req = urllib.request.Request(url)
+    req = _make_request(url)
 
     try:
         with urllib.request.urlopen(req, timeout=15) as response:
