@@ -868,6 +868,25 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="lookup_bonds",
+            description="Look up specific bonds by ISIN. Returns current pricing, yield, spread, duration, ratings, and expected return from the RVM analytics database. Use this when you have specific bond identifiers (ISINs) and need current market data for them — ideal for portfolio analysis, monthly reports, and performance attribution. Unlike search_bonds_rvm, this does exact ISIN matching and does NOT exclude portfolio holdings.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "isins": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of ISIN codes (e.g., ['US912810SZ21', 'XS2010028939']). Maximum 50."
+                    },
+                    "client_id": {
+                        "type": "string",
+                        "description": "Client identifier (optional)"
+                    }
+                },
+                "required": ["isins"]
+            }
+        ),
+        Tool(
             name="suggest_rebalancing",
             description="Analyze portfolio and suggest rebalancing trades to improve compliance, diversification, or optimize expected returns. Returns prioritized list of suggested sells (overweight positions, low return bonds) and buys (underweight countries, high return opportunities). Considers compliance headroom and available cash.",
             inputSchema={
@@ -2997,6 +3016,79 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
                     'sort_by': sort_by
                 },
                 'tip': "For investment-grade sovereign bonds, use min_rating='BBB-' and min_nfa_rating=3"
+            }
+
+            return [TextContent(
+                type="text",
+                text=json.dumps(result, indent=2, default=str)
+            )]
+
+        elif name == "lookup_bonds":
+            # Look up specific bonds by ISIN — exact match, no fuzzy, no portfolio exclusion
+            isins_raw = arguments.get("isins", [])
+            client_id = arguments.get("client_id")
+
+            # Sanitise: only valid ISIN patterns, cap at 50
+            import re as _re
+            isins = [s.strip().upper() for s in isins_raw if _re.match(r'^[A-Z]{2}[A-Z0-9]{9,10}$', s.strip().upper())]
+            if not isins:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({"error": "No valid ISINs provided. ISINs must be 11-12 characters starting with 2 letters.", "bonds": {}, "not_found": []}, indent=2)
+                )]
+            if len(isins) > 50:
+                isins = isins[:50]
+
+            isin_list = ", ".join(f"'{isin}'" for isin in isins)
+
+            sql = f"""
+            WITH latest AS (
+                SELECT isin, MAX(bpdate) as max_date
+                FROM agg_analysis_data
+                GROUP BY isin
+            )
+            SELECT
+                a.isin, a.ticker, a.description, a.country,
+                a.ytw as yield_pct, a.oas as spread_bp, a.oad as duration,
+                a.return_ytw as expected_return,
+                a.price, a.coupon, a.maturity,
+                a.rating_sp, a.rating_moody, a.bpdate
+            FROM agg_analysis_data a
+            JOIN latest l ON a.isin = l.isin AND a.bpdate = l.max_date
+            WHERE a.isin IN ({isin_list})
+            """
+
+            df = query_bigquery(sql, client_id)
+
+            # Build result keyed by ISIN for easy cross-referencing
+            bonds = {}
+            for _, row in df.iterrows():
+                bonds[row['isin']] = {
+                    'isin': row['isin'],
+                    'ticker': row.get('ticker'),
+                    'description': row.get('description'),
+                    'country': row.get('country'),
+                    'price': float(row['price']) if row.get('price') is not None else None,
+                    'yield': f"{row['yield_pct']:.2f}%" if row.get('yield_pct') is not None else None,
+                    'spread': f"{row['spread_bp']:.0f}bp" if row.get('spread_bp') is not None else None,
+                    'duration': f"{row['duration']:.2f}y" if row.get('duration') is not None else None,
+                    'expected_return': f"{row['expected_return']:.2f}%" if row.get('expected_return') is not None else None,
+                    'coupon': f"{row['coupon']:.2f}%" if row.get('coupon') is not None else None,
+                    'maturity': str(row['maturity']) if row.get('maturity') else None,
+                    'rating_sp': row.get('rating_sp'),
+                    'rating_moody': row.get('rating_moody'),
+                    'data_date': str(row['bpdate']) if row.get('bpdate') else None,
+                }
+
+            found_isins = set(bonds.keys())
+            not_found = [isin for isin in isins if isin not in found_isins]
+
+            result = {
+                'bonds': bonds,
+                'found': len(bonds),
+                'not_found': not_found,
+                'not_found_count': len(not_found),
+                'queried': len(isins),
             }
 
             return [TextContent(
