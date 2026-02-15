@@ -60,6 +60,7 @@ _MCP_URL_DEFAULTS = {
     "reasoning": ("REASONING_MCP_URL", "https://reasoning-mcp-production-537b.up.railway.app"),
     "sov_quasi": ("SOV_QUASI_MCP_URL", "https://sov-quasi-list-production.up.railway.app"),
     "supabase": ("SUPABASE_MCP_URL", "http://localhost:8001"),
+    "m365": ("M365_MCP_URL", "http://localhost:8002"),
 }
 
 # Cache for resolved URLs
@@ -2093,3 +2094,125 @@ async def get_fund_session_status_async(
         {"session_id": session_id},
         client
     )
+
+
+# ============================================================================
+# M365 MCP - Microsoft 365 Gateway (Email, Calendar, OneDrive, SharePoint, Teams)
+# ============================================================================
+
+def _call_m365_mcp(tool: str, args: Dict[str, Any] = None) -> Dict[str, Any]:
+    """Call an M365 MCP tool via /call endpoint."""
+    try:
+        url = f"{_get_mcp_url('m365')}/call"
+        payload = {"tool": tool, "args": args or {}}
+        response = _post(url, json_data=payload)
+        response.raise_for_status()
+        result = response.json()
+        if result.get("success"):
+            return result.get("result")
+        return {"error": result.get("error", "Unknown error")}
+    except Exception as e:
+        logger.error(f"M365 MCP error calling {tool}: {e}")
+        return {"error": str(e)}
+
+
+def search_m365_emails(user_code: str, query: str, top: int = 10) -> Dict[str, Any]:
+    """Search user's Outlook emails."""
+    return _call_m365_mcp("search_emails", {"user_code": user_code, "query": query, "top": top})
+
+
+def get_m365_calendar(user_code: str, start_date: str, end_date: str) -> Dict[str, Any]:
+    """Get user's calendar events for a date range."""
+    return _call_m365_mcp("get_calendar", {"user_code": user_code, "start_date": start_date, "end_date": end_date})
+
+
+def search_m365_files(user_code: str, query: str) -> Dict[str, Any]:
+    """Search user's OneDrive files."""
+    return _call_m365_mcp("search_files", {"user_code": user_code, "query": query})
+
+
+def search_m365_sharepoint(user_code: str, query: str) -> Dict[str, Any]:
+    """Search SharePoint sites and documents."""
+    return _call_m365_mcp("search_sharepoint", {"user_code": user_code, "query": query})
+
+
+def search_m365_teams(user_code: str, query: str) -> Dict[str, Any]:
+    """Search Teams messages."""
+    return _call_m365_mcp("search_teams", {"user_code": user_code, "query": query})
+
+
+def get_m365_status(user_code: str) -> Dict[str, Any]:
+    """Check if user is connected to M365."""
+    return _call_m365_mcp("get_m365_status", {"user_code": user_code})
+
+
+# ============================================================================
+# M365 MCP - ASYNC VERSIONS
+# ============================================================================
+
+async def _call_m365_mcp_async(
+    tool: str,
+    args: Dict[str, Any] = None,
+    client: "httpx.AsyncClient" = None,
+) -> Dict[str, Any]:
+    """Async version of _call_m365_mcp."""
+    if not HTTPX_AVAILABLE:
+        return _call_m365_mcp(tool, args)
+    try:
+        url = f"{_get_mcp_url('m365')}/call"
+        payload = {"tool": tool, "args": args or {}}
+        if client:
+            resp = await client.post(url, json=payload, timeout=TIMEOUT)
+        else:
+            async with httpx.AsyncClient() as new_client:
+                resp = await new_client.post(url, json=payload, timeout=TIMEOUT)
+        resp.raise_for_status()
+        result = resp.json()
+        if result.get("success"):
+            return result.get("result")
+        return {"error": result.get("error", "Unknown error")}
+    except Exception as e:
+        logger.error(f"M365 MCP async error calling {tool}: {e}")
+        return {"error": str(e)}
+
+
+async def search_m365_emails_async(
+    user_code: str, query: str, top: int = 10, client: "httpx.AsyncClient" = None
+) -> Dict[str, Any]:
+    """Async: Search user's Outlook emails."""
+    return await _call_m365_mcp_async("search_emails", {"user_code": user_code, "query": query, "top": top}, client)
+
+
+async def get_m365_calendar_async(
+    user_code: str, start_date: str, end_date: str, client: "httpx.AsyncClient" = None
+) -> Dict[str, Any]:
+    """Async: Get user's calendar events."""
+    return await _call_m365_mcp_async("get_calendar", {"user_code": user_code, "start_date": start_date, "end_date": end_date}, client)
+
+
+async def search_m365_files_async(
+    user_code: str, query: str, client: "httpx.AsyncClient" = None
+) -> Dict[str, Any]:
+    """Async: Search user's OneDrive files."""
+    return await _call_m365_mcp_async("search_files", {"user_code": user_code, "query": query}, client)
+
+
+async def search_m365_sharepoint_async(
+    user_code: str, query: str, client: "httpx.AsyncClient" = None
+) -> Dict[str, Any]:
+    """Async: Search SharePoint sites and documents."""
+    return await _call_m365_mcp_async("search_sharepoint", {"user_code": user_code, "query": query}, client)
+
+
+async def search_m365_teams_async(
+    user_code: str, query: str, client: "httpx.AsyncClient" = None
+) -> Dict[str, Any]:
+    """Async: Search Teams messages."""
+    return await _call_m365_mcp_async("search_teams", {"user_code": user_code, "query": query}, client)
+
+
+async def get_m365_status_async(
+    user_code: str, client: "httpx.AsyncClient" = None
+) -> Dict[str, Any]:
+    """Async: Check if user is connected to M365."""
+    return await _call_m365_mcp_async("get_m365_status", {"user_code": user_code}, client)

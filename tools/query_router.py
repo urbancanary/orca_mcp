@@ -119,6 +119,25 @@ Given a user query and optional conversation context, determine which internal t
 - "watchlist", "buy candidates", "opportunities" → get_watchlist
 - "compliance", "UCITS", "5/10/40" → get_compliance_status
 
+### Microsoft 365 Queries (require user_code)
+- "my emails", "search emails", "inbox", "outlook", "email from [person]" → search_m365_emails
+- "calendar", "meetings", "schedule", "what's on my calendar", "my agenda" → get_m365_calendar
+- "my files", "onedrive", "search my files" → search_m365_files
+- "sharepoint", "shared documents", "team docs", "sharepoint site" → search_m365_sharepoint
+- "teams messages", "teams chat", "teams search" → search_m365_teams
+- "am I connected to M365", "M365 status", "microsoft connection" → get_m365_status
+- NOTE: All M365 tools require user_code argument. Use user_code from context if available.
+
+### SEC EDGAR Filing Queries
+- "10-K", "10-Q", "8-K", "SEC filing", "annual report", "quarterly report" → edgar tools
+- "risk factors" + company/ticker → edgar_filing_section with section="risk_factors"
+- "MD&A", "management discussion" + company → edgar_filing_section with section="mda"
+- "business description" + company → edgar_filing_section with section="business"
+- "income statement", "balance sheet", "cash flow", "financials" + company ticker → edgar_financials
+- "SEC filings for [company]", "find [company] on EDGAR" → edgar_search_company
+- "who filed", "filings mentioning", "SEC search" → edgar_search_filings
+- NOTE: edgar_financials needs a ticker (AAPL), not a country name. For country economic data use IMF/FRED.
+
 ### Bond Queries
 - "bonds", "search bonds", "find bonds" → search_bonds_rvm
 - "bond from [country]" → search_bonds_rvm with country filter
@@ -225,6 +244,20 @@ Given a user query and optional conversation context, determine which internal t
 50. check_country_priority(country) - Check if specific country needs research report and its priority level
 51. get_pending_reports() - Summary of all reports needing work (needs-research vs raw-uploaded)
 
+## Microsoft 365 (per-user - email, calendar, files, sharepoint, teams)
+54. search_m365_emails(user_code, query, top?) - Search user's Outlook emails
+55. get_m365_calendar(user_code, start_date, end_date) - Calendar events in date range (ISO 8601 dates)
+56. search_m365_files(user_code, query) - Search user's OneDrive files
+57. search_m365_sharepoint(user_code, query) - Search SharePoint sites and documents
+58. search_m365_teams(user_code, query) - Search Teams messages and channels
+59. get_m365_status(user_code) - Check if user is connected to Microsoft 365
+
+## SEC EDGAR Filing Analysis
+60. edgar_search_company(query) - Find company in SEC EDGAR by ticker/name/CIK. Returns company profile + recent filings list.
+61. edgar_filing_section(ticker, section, form_type?) - Extract section from 10-K/10-Q. Sections: risk_factors, mda, business, financial_statements, legal_proceedings, market_risk, controls. form_type default: 10-K.
+62. edgar_financials(ticker, statement?, periods?, annual?) - XBRL financial statements. statement: income/balance/cashflow/all. periods default: 4. annual default: true.
+63. edgar_search_filings(query, form_type?, ticker?, date_from?, date_to?, max_results?) - Full-text search across all SEC EDGAR filings. Supports boolean queries and exact phrases.
+
 ## Display-Ready Endpoints (for thin frontends - all values include _fmt versions)
 39. get_holdings_display(portfolio_id?) - Holdings with ALL display columns and formatted values. Use for Holdings page.
 40. get_portfolio_dashboard(portfolio_id?) - Single call for Portfolio/Summary page: stats, allocations, compliance summary.
@@ -285,6 +318,26 @@ If the query is ambiguous or you need more information:
 - "what reports are pending?" -> {{"tool": "get_pending_reports", "args": {{}}, "confidence": 0.95}}
 - "show me reports needing work" -> {{"tool": "get_pending_reports", "args": {{}}, "confidence": 0.92}}
 - "priority status for Argentina" -> {{"tool": "check_country_priority", "args": {{"country": "Argentina"}}, "confidence": 0.93}}
+
+### Microsoft 365 Examples
+- "search my emails for quarterly report" -> {{"tool": "search_m365_emails", "args": {{"user_code": "from_context", "query": "quarterly report"}}, "confidence": 0.95}}
+- "what meetings do I have tomorrow" -> {{"tool": "get_m365_calendar", "args": {{"user_code": "from_context", "start_date": "2026-02-13T00:00:00Z", "end_date": "2026-02-13T23:59:59Z"}}, "confidence": 0.95}}
+- "find the Brazil prospectus on SharePoint" -> {{"tool": "search_m365_sharepoint", "args": {{"user_code": "from_context", "query": "Brazil prospectus"}}, "confidence": 0.92}}
+- "search teams for compliance discussion" -> {{"tool": "search_m365_teams", "args": {{"user_code": "from_context", "query": "compliance discussion"}}, "confidence": 0.92}}
+- "emails from John about GA10" -> {{"tool": "search_m365_emails", "args": {{"user_code": "from_context", "query": "from:John GA10"}}, "confidence": 0.93}}
+- "my calendar this week" -> {{"tool": "get_m365_calendar", "args": {{"user_code": "from_context", "start_date": "2026-02-09T00:00:00Z", "end_date": "2026-02-15T23:59:59Z"}}, "confidence": 0.94}}
+- "find quarterly report on OneDrive" -> {{"tool": "search_m365_files", "args": {{"user_code": "from_context", "query": "quarterly report"}}, "confidence": 0.93}}
+- "am I connected to Microsoft" -> {{"tool": "get_m365_status", "args": {{"user_code": "from_context"}}, "confidence": 0.95}}
+
+### SEC EDGAR Filing Examples
+- "Apple's risk factors" -> {{"tool": "edgar_filing_section", "args": {{"ticker": "AAPL", "section": "risk_factors"}}, "confidence": 0.95}}
+- "JPM income statement" -> {{"tool": "edgar_financials", "args": {{"ticker": "JPM", "statement": "income"}}, "confidence": 0.95}}
+- "Amazon 10-K MD&A section" -> {{"tool": "edgar_filing_section", "args": {{"ticker": "AMZN", "section": "mda"}}, "confidence": 0.95}}
+- "SEC filings for Tesla" -> {{"tool": "edgar_search_company", "args": {{"query": "TSLA"}}, "confidence": 0.95}}
+- "find SEC filings mentioning artificial intelligence" -> {{"tool": "edgar_search_filings", "args": {{"query": "artificial intelligence", "form_type": "10-K"}}, "confidence": 0.92}}
+- "AAPL balance sheet" -> {{"tool": "edgar_financials", "args": {{"ticker": "AAPL", "statement": "balance"}}, "confidence": 0.95}}
+- "Microsoft quarterly financials" -> {{"tool": "edgar_financials", "args": {{"ticker": "MSFT", "statement": "income", "annual": false}}, "confidence": 0.90}}
+- "who mentioned tariff risk in their 10-K" -> {{"tool": "edgar_search_filings", "args": {{"query": "tariff risk", "form_type": "10-K"}}, "confidence": 0.92}}
 
 ### Disambiguation Examples (apply rules)
 - "Colombia" -> {{"tool": "get_nfa_rating", "args": {{"country": "Colombia"}}, "confidence": 0.90}}
@@ -506,6 +559,8 @@ CAPABILITIES:
 - Sovereign Credit Reports: Full country reports, section extraction, keyword search
 - Report Q&A: Ask questions about country reports (uses Gemini 2.5 Flash with caching)
 - Report Comparison: Compare 2-5 countries on any aspect
+- SEC EDGAR: Company search, filing sections (risk factors, MD&A), XBRL financials, full-text filing search
+- Microsoft 365: Search Outlook emails, calendar events, OneDrive/SharePoint files, Teams messages
 
 EXAMPLES:
 - "What's the current 10Y treasury rate?"
@@ -522,5 +577,11 @@ EXAMPLES:
 - "Summarize Brazil's external position"
 - "What are Turkey's main credit risks?"
 - "Compare Brazil and Mexico fiscal positions"
+- "Show me Apple's risk factors from their 10-K"
+- "JPM income statement"
+- "Search SEC filings for artificial intelligence"
+- "Search my emails for quarterly report"
+- "What meetings do I have tomorrow?"
+- "Find the prospectus on SharePoint"
 
 Just describe what you need in natural language."""

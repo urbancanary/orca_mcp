@@ -190,16 +190,17 @@ class MinervaMCPClient:
 
             context = "\n\n---\n\n".join(context_parts)
 
-            prompt = f"""Based on the following video transcript excerpts, answer this question: "{query}"
+            prompt = f"""Answer this question about the video content: "{query}"
 
+Video content:
 {context}
 
 Instructions:
-- Synthesize the key insights that answer the question
-- Include the specific video title and timestamp for each key point
+- Answer directly and confidently as if you watched the video
+- Do NOT say "based on the transcript" or "according to the excerpts" - just answer naturally
+- For each key point, include a clickable reference in format: [video_id, MM:SS] e.g. [biVXxcjM4ws, 1:24]
 - Be concise but comprehensive
-- Write in a {tone} tone
-- If excerpts don't fully answer the question, acknowledge what's missing"""
+- Write in a {tone} tone"""
 
             response = client.messages.create(
                 model="claude-haiku-4-5",
