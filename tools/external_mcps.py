@@ -48,6 +48,62 @@ except ImportError:
 logger = logging.getLogger("orca-mcp.external")
 
 
+# =============================================================================
+# RESIDENTIAL PROXY CONFIGURATION (Belt & Braces for Cloudflare Bot Fight Mode)
+# =============================================================================
+# Set RESIDENTIAL_PROXY_URL env var or store in auth_mcp
+# Format: http://user:pass@gate.smartproxy.com:10001
+#
+# Why: Cloudflare Bot Fight Mode can block datacenter IPs (AWS, GCP, Railway).
+# A residential proxy makes requests appear to come from home internet connections.
+# Combined with our User-Agent fix, this provides defense-in-depth.
+# =============================================================================
+
+_proxy_config_cache: Optional[Dict[str, str]] = None
+
+
+def _get_proxy_config() -> Optional[Dict[str, str]]:
+    """
+    Get residential proxy configuration for HTTP requests.
+
+    Resolution order:
+    1. Cached value
+    2. RESIDENTIAL_PROXY_URL environment variable
+    3. auth_mcp lookup (for Railway where env vars are harder to manage)
+    4. None (no proxy)
+
+    Returns:
+        Dict with "http" and "https" keys, or None if no proxy configured
+    """
+    global _proxy_config_cache
+
+    # Return cached value if we've already resolved
+    if _proxy_config_cache is not None:
+        return _proxy_config_cache if _proxy_config_cache else None
+
+    # Try environment variable first
+    proxy_url = os.environ.get("RESIDENTIAL_PROXY_URL")
+
+    # Try auth_mcp if available and env var not set
+    if not proxy_url and AUTH_CLIENT_AVAILABLE and get_api_key:
+        try:
+            proxy_url = get_api_key("RESIDENTIAL_PROXY_URL", fallback_env=False, requester="orca-mcp")
+        except Exception as e:
+            logger.debug(f"auth-mcp proxy lookup failed: {e}")
+
+    if proxy_url:
+        _proxy_config_cache = {"http": proxy_url, "https": proxy_url}
+        # Log with credentials masked
+        masked = proxy_url.split('@')[-1] if '@' in proxy_url else proxy_url[:30] + "..."
+        logger.info(f"Residential proxy configured: ...@{masked}")
+        return _proxy_config_cache
+
+    # No proxy - cache empty dict to avoid repeated lookups
+    _proxy_config_cache = {}
+    logger.debug("No residential proxy configured - using direct connections")
+    return None
+
+
 # MCP Service URL defaults (auth-mcp key -> env var -> hardcoded fallback)
 _MCP_URL_DEFAULTS = {
     "nfa": ("NFA_MCP_URL", "https://nfa-mcp.urbancanary.workers.dev"),
@@ -139,13 +195,27 @@ def _get_auth_headers() -> Dict[str, str]:
 
 
 def _get(url: str, params: Dict = None, timeout: int = TIMEOUT) -> requests.Response:
-    """Make authenticated GET request."""
-    return requests.get(url, params=params, headers=_get_auth_headers(), timeout=timeout)
+    """Make authenticated GET request with optional residential proxy."""
+    proxies = _get_proxy_config()
+    return requests.get(
+        url,
+        params=params,
+        headers=_get_auth_headers(),
+        timeout=timeout,
+        proxies=proxies
+    )
 
 
 def _post(url: str, json_data: Dict = None, timeout: int = TIMEOUT) -> requests.Response:
-    """Make authenticated POST request."""
-    return requests.post(url, json=json_data, headers=_get_auth_headers(), timeout=timeout)
+    """Make authenticated POST request with optional residential proxy."""
+    proxies = _get_proxy_config()
+    return requests.post(
+        url,
+        json=json_data,
+        headers=_get_auth_headers(),
+        timeout=timeout,
+        proxies=proxies
+    )
 
 
 # ============================================================================
@@ -1081,6 +1151,33 @@ def check_country_priority(country: str) -> Dict[str, Any]:
 # These provide 7-18x speedup when calling multiple APIs in parallel
 # ============================================================================
 
+def _get_httpx_proxy() -> Optional[str]:
+    """
+    Get proxy URL for httpx (uses single URL format, not dict).
+
+    Returns:
+        Proxy URL string or None
+    """
+    proxy_config = _get_proxy_config()
+    if proxy_config:
+        # httpx uses the same URL for all protocols
+        return proxy_config.get("https") or proxy_config.get("http")
+    return None
+
+
+def _create_async_client() -> "httpx.AsyncClient":
+    """
+    Create an httpx AsyncClient with optional residential proxy.
+
+    Returns:
+        httpx.AsyncClient configured with proxy if available
+    """
+    proxy_url = _get_httpx_proxy()
+    if proxy_url:
+        return httpx.AsyncClient(proxy=proxy_url)
+    return httpx.AsyncClient()
+
+
 async def _async_get(client: "httpx.AsyncClient", url: str, params: Dict = None,
                      timeout: int = TIMEOUT) -> Dict[str, Any]:
     """Make authenticated async GET request."""
@@ -1125,7 +1222,7 @@ async def get_nfa_rating_async(country: str, year: Optional[int] = None,
     if client:
         return await _async_get(client, url, params)
     else:
-        async with httpx.AsyncClient() as new_client:
+        async with _create_async_client() as new_client:
             return await _async_get(new_client, url, params)
 
 
@@ -1147,7 +1244,7 @@ async def get_nfa_batch_async(countries: List[str], year: Optional[int] = None) 
             results[c] = get_nfa_rating(c, year)
         return results
 
-    async with httpx.AsyncClient() as client:
+    async with _create_async_client() as client:
         tasks = [get_nfa_rating_async(c, year, client=client) for c in countries]
         responses = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -1175,7 +1272,7 @@ async def get_credit_rating_async(country: str, client: "httpx.AsyncClient" = No
     if client:
         return await _async_get(client, url)
     else:
-        async with httpx.AsyncClient() as new_client:
+        async with _create_async_client() as new_client:
             return await _async_get(new_client, url)
 
 
@@ -1193,7 +1290,7 @@ async def get_credit_ratings_batch_async(countries: List[str]) -> Dict[str, Dict
         # Fall back to sync batch call
         return get_credit_ratings_batch(countries)
 
-    async with httpx.AsyncClient() as client:
+    async with _create_async_client() as client:
         tasks = [get_credit_rating_async(c, client=client) for c in countries]
         responses = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -1243,7 +1340,7 @@ async def get_country_ratings_async(countries: List[str], include_nfa: bool = Tr
                 results[c]["credit"] = get_credit_rating(c)
         return results
 
-    async with httpx.AsyncClient() as client:
+    async with _create_async_client() as client:
         # Build all tasks
         nfa_tasks = []
         credit_tasks = []
@@ -1306,7 +1403,7 @@ async def get_imf_indicator_async(indicator: str, country: str, start_year: Opti
     if client:
         return await _async_get(client, url, params)
     else:
-        async with httpx.AsyncClient() as new_client:
+        async with _create_async_client() as new_client:
             return await _async_get(new_client, url, params)
 
 
@@ -1326,7 +1423,7 @@ async def compare_imf_countries_async(indicator: str, countries: List[str],
     if not HTTPX_AVAILABLE:
         return compare_imf_countries(indicator, countries, year)
 
-    async with httpx.AsyncClient() as client:
+    async with _create_async_client() as client:
         tasks = [get_imf_indicator_async(indicator, c, year, year, client=client) for c in countries]
         responses = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -1371,7 +1468,7 @@ async def get_worldbank_indicator_async(indicator: str, country: str,
     if client:
         return await _async_post(client, url, payload)
     else:
-        async with httpx.AsyncClient() as new_client:
+        async with _create_async_client() as new_client:
             return await _async_post(new_client, url, payload)
 
 
@@ -1392,7 +1489,7 @@ async def get_worldbank_country_profile_async(country: str) -> Dict[str, Any]:
         "SP.DYN.LE00.IN",  # Life expectancy
     ]
 
-    async with httpx.AsyncClient() as client:
+    async with _create_async_client() as client:
         tasks = [get_worldbank_indicator_async(ind, country, client=client) for ind in key_indicators]
         responses = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -1607,7 +1704,7 @@ async def _call_supabase_mcp_async(
         if client:
             resp = await client.post(url, json=payload, headers=headers, timeout=TIMEOUT)
         else:
-            async with httpx.AsyncClient() as new_client:
+            async with _create_async_client() as new_client:
                 resp = await new_client.post(url, json=payload, headers=headers, timeout=TIMEOUT)
 
         resp.raise_for_status()
@@ -1684,7 +1781,7 @@ async def get_portfolio_with_ratings_async(portfolio_id: str) -> Dict[str, Any]:
             }
         return {"holdings": holdings, "ratings": ratings}
 
-    async with httpx.AsyncClient() as client:
+    async with _create_async_client() as client:
         # Step 1: Get holdings
         holdings = await get_supabase_holdings_async(portfolio_id, client)
         if "error" in holdings:
@@ -1757,7 +1854,7 @@ async def call_reasoning_async(
     if client:
         return await _async_post(client, url, json_data=payload, timeout=60)
     else:
-        async with httpx.AsyncClient() as new_client:
+        async with _create_async_client() as new_client:
             return await _async_post(new_client, url, json_data=payload, timeout=60)
 
 
@@ -2039,7 +2136,7 @@ async def _call_funds_mcp_async(
         if client:
             resp = await client.post(url, json=payload, headers=_get_auth_headers(), timeout=TIMEOUT)
         else:
-            async with httpx.AsyncClient() as new_client:
+            async with _create_async_client() as new_client:
                 resp = await new_client.post(url, json=payload, headers=_get_auth_headers(), timeout=TIMEOUT)
 
         resp.raise_for_status()
@@ -2172,7 +2269,7 @@ async def _call_m365_mcp_async(
         if client:
             resp = await client.post(url, json=payload, headers=headers, timeout=TIMEOUT)
         else:
-            async with httpx.AsyncClient() as new_client:
+            async with _create_async_client() as new_client:
                 resp = await new_client.post(url, json=payload, headers=headers, timeout=TIMEOUT)
         resp.raise_for_status()
         result = resp.json()
