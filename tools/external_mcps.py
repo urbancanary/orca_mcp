@@ -125,10 +125,16 @@ def _generate_token() -> str:
 
 
 def _get_auth_headers() -> Dict[str, str]:
-    """Get headers with fresh auth token for MCP requests."""
+    """Get headers with fresh auth token for MCP requests.
+
+    Includes User-Agent to bypass Cloudflare Bot Fight Mode which blocks
+    default python-requests User-Agent with 403 errors.
+    """
     return {
         'Content-Type': 'application/json',
-        'Authorization': f'Bearer {_generate_token()}'
+        'Authorization': f'Bearer {_generate_token()}',
+        'User-Agent': 'Orca-MCP/3.2',
+        'Accept': 'application/json',
     }
 
 
@@ -1596,12 +1602,13 @@ async def _call_supabase_mcp_async(
     try:
         url = f"{_get_mcp_url('supabase')}/call"
         payload = {"tool": tool, "args": args or {}}
+        headers = _get_auth_headers()
 
         if client:
-            resp = await client.post(url, json=payload, timeout=TIMEOUT)
+            resp = await client.post(url, json=payload, headers=headers, timeout=TIMEOUT)
         else:
             async with httpx.AsyncClient() as new_client:
-                resp = await new_client.post(url, json=payload, timeout=TIMEOUT)
+                resp = await new_client.post(url, json=payload, headers=headers, timeout=TIMEOUT)
 
         resp.raise_for_status()
         result = resp.json()
@@ -2161,11 +2168,12 @@ async def _call_m365_mcp_async(
     try:
         url = f"{_get_mcp_url('m365')}/call"
         payload = {"tool": tool, "args": args or {}}
+        headers = _get_auth_headers()
         if client:
-            resp = await client.post(url, json=payload, timeout=TIMEOUT)
+            resp = await client.post(url, json=payload, headers=headers, timeout=TIMEOUT)
         else:
             async with httpx.AsyncClient() as new_client:
-                resp = await new_client.post(url, json=payload, timeout=TIMEOUT)
+                resp = await new_client.post(url, json=payload, headers=headers, timeout=TIMEOUT)
         resp.raise_for_status()
         result = resp.json()
         if result.get("success"):
